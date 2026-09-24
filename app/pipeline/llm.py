@@ -79,28 +79,40 @@ def chat_json(system: str, user: str, *, max_tokens: int = 1500) -> Any:
 
 # ── Step 0: map arbitrary CSV columns to canonical fields ────────────────
 MAP_SYS = (
-    "You map the columns of a CSV of leads to a fixed set of canonical fields. "
-    "You are given the first few rows exactly as parsed (a list of rows, each a "
-    "list of cell strings). First decide whether row 0 is a HEADER row (column "
-    "names) or already DATA. Then, for each canonical field, give the 0-based "
-    "COLUMN INDEX that holds it, or null if it is not present:\n"
-    "- name: the person's full name. If first and last name are in SEPARATE "
-    "columns, return a LIST of indices to join in order, e.g. [1,2].\n"
-    "- company: the person's employer/organization (ignore generic email hosts).\n"
-    "- email, phone: contact columns.\n"
-    "- linkedin: a column holding a LinkedIn URL/handle.\n"
-    "- message: the main free-text note / enquiry / bio / 'about' column.\n"
-    "Ignore unrelated columns (dates, times, status, visa type, deal title, "
-    "source, owner, etc).\n"
-    "The data is often MESSY: headers may be prefixed or renamed (e.g. 'Person - "
-    "First name', 'Contact Email Address', 'Mobile No.', 'Deal - Title'), there "
-    "may be extra/blank columns, inconsistent spacing, or NO header row at all. "
-    "Do not rely on header text alone — also look at the actual cell VALUES in the "
-    "sample rows to decide (a cell with '@' is an email, digits/'+' is a phone, "
-    "text containing 'linkedin.com' is linkedin, a short 'First Last' string is a "
-    "name, a long sentence is the message). If row 0 has header-like labels and no "
-    "real values, it is a header. Pick the single best column per field; if none "
-    "fits, use null. Respond ONLY with a JSON object."
+    "You map the columns of a leads CSV to a fixed set of canonical fields. "
+    "Input: the first few parsed rows as a JSON array of rows (each row is a list "
+    "of cell strings). For each field, output the 0-based COLUMN INDEX that holds "
+    "it, or null if absent.\n"
+    "FIELDS:\n"
+    "- name: the person's full name. If given-name and surname are in SEPARATE "
+    "columns, return a LIST of indices to join in order (e.g. [0,1]).\n"
+    "- company: the employer as a SHORT standalone organization name (e.g. "
+    "'Wells Fargo'). A descriptive sentence that merely mentions an employer is "
+    "NOT the company — it is the message.\n"
+    "- email: an email address.\n"
+    "- phone: a phone number.\n"
+    "- linkedin: a LinkedIn URL or handle.\n"
+    "- message: the main free-text note / enquiry / bio / 'about' / comment — "
+    "usually the longest sentence-like cell.\n"
+    "RULES:\n"
+    "1. Set has_header true only if row 0 holds column LABELS (no real data "
+    "values); otherwise false (row 0 is already data).\n"
+    "2. Decide by the actual VALUES, not just header text. Headers may be renamed, "
+    "prefixed, or missing ('Person - First name', 'Mobile No.', 'Deal - Title'). "
+    "A cell with '@' is email; mostly digits/'+'/'-'/() is phone; containing "
+    "'linkedin.com' is linkedin; a short 'First Last' is a name; a long sentence "
+    "is the message.\n"
+    "3. Ignore unrelated columns (dates, times, status, visa type, deal/opportunity "
+    "title, source, owner, tags, IDs, etc).\n"
+    "4. Pick the single best column per field; use null if none fits.\n"
+    "EXAMPLE INPUT: [[\"Person - First name\",\"Surname\",\"Email\",\"Deal - Title\","
+    "\"LinkedIn\",\"Notes\"],[\"Gauri\",\"Bansal\",\"gb@nyu.edu\",\"O1 Visa\","
+    "\"linkedin.com/in/gauribansal\",\"Exec Director at Acme, exploring O-1A\"]]\n"
+    "EXAMPLE OUTPUT: {\"has_header\": true, \"name\": [0,1], \"company\": null, "
+    "\"email\": 2, \"phone\": null, \"linkedin\": 4, \"message\": 5}\n"
+    "(company is null there because 'Exec Director at Acme...' is a sentence = the "
+    "message, not a standalone company name.)\n"
+    "Respond ONLY with the JSON object, no prose."
 )
 MAP_SCHEMA = (
     '{"has_header": bool, "name": int|[int,...]|null, "company": int|null, '
@@ -114,7 +126,7 @@ def map_columns(sample_rows: list[list[str]]) -> dict:
         f"Rows (row 0 first):\n{json.dumps(sample_rows[:5], ensure_ascii=False)}\n\n"
         f"Return JSON with exactly these keys: {MAP_SCHEMA}."
     )
-    out = chat_json(MAP_SYS, user, max_tokens=400)
+    out = chat_json(MAP_SYS, user, max_tokens=300)
     return out if isinstance(out, dict) else {}
 
 

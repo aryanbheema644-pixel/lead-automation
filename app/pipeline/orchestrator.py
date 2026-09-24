@@ -68,10 +68,12 @@ def process_lead(lead_id: int) -> None:
         # 3) LinkedIn discovery via the Apify search actor (queries LinkedIn's own
         #    index; "Full" mode returns profile data inline). Falls back to a
         #    Tavily domain-restricted pass if the search actor isn't configured.
-        # Skip discovery entirely when the lead said they have no LinkedIn, unless
-        # they also pasted a URL (then we honor the URL).
+        # If the lead said they have no LinkedIn, do NO LinkedIn searching of any
+        # kind: skip discovery AND drop any LinkedIn URLs the general web search
+        # surfaced. Other enrichment (personal site, company, news, ...) still runs.
         if lead.get("li_optout") and not provided_hits:
             lane_li = []
+            gen_li = []
         else:
             lane_li = search_by_name(extracted)
             if not lane_li:
