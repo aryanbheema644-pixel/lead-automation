@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LeadSearch — Lead Verification Pipeline</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/static/logo.png" class="logo-img" alt="Beyond Border" />
+      <div>
+        <h1>LeadSearch</h1>
+        <p class="tagline">Spreadsheet lead → verified person profile</p>
+      </div>
+    </div>
+    <div id="providers" class="providers"></div>
+  </header>
+
+  <main>
+    <!-- Controls -->
+    <section class="panel controls">
+      <div class="upload">
+        <label class="filedrop" id="filedrop">
+          <input type="file" id="fileInput" accept=".csv" hidden />
+          <span class="filedrop-icon">⬆</span>
+          <span class="filedrop-text">Drop a leads CSV here or <b>browse</b></span>
+          <span class="filedrop-hint">Columns: Name, Company, Email, Phone, Message</span>
+        </label>
+        <div id="uploadMsg" class="msg"></div>
+      </div>
+      <div class="actions">
+        <button id="runBtn" class="btn primary">Run pipeline ▸</button>
+        <a href="/api/export" class="btn ghost">Export verified CSV</a>
+        <button id="resetBtn" class="btn danger-ghost">Reset</button>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="stats" id="stats"></section>
+
+    <!-- Filters -->
+    <nav class="filters" id="filters">
+      <button data-status="all" class="chip active">All</button>
+      <button data-status="queued" class="chip">Queued</button>
+      <button data-status="processing" class="chip">Processing</button>
+      <button data-status="accepted" class="chip">Accepted</button>
+      <button data-status="review" class="chip">Needs review</button>
+      <button data-status="rejected" class="chip">Rejected</button>
+      <button data-status="error" class="chip">Errors</button>
+    </nav>
+
+    <!-- Table -->
+    <section class="panel">
+      <table class="leads">
+        <thead>
+          <tr>
+            <th>#</th><th>Name</th><th>Company</th><th>Status</th>
+            <th>Top match</th><th>Confidence</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="leadRows">
+          <tr><td colspan="7" class="empty">No leads yet — upload a CSV to begin.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <!-- Detail drawer -->
+  <div id="drawer" class="drawer">
+    <div class="drawer-panel">
+      <button class="drawer-close" id="drawerClose">✕</button>
+      <div id="drawerBody"></div>
+    </div>
+  </div>
+
+  <footer class="footer">Beyond Border · LeadSearch</footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
