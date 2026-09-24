@@ -73,6 +73,26 @@ CSV columns are matched flexibly (case-insensitive; `Name`/`Full Name`, `Company
 Thresholds and caps live in `.env` (`ACCEPT_THRESHOLD`, `REVIEW_THRESHOLD`,
 `MAX_RESULTS_PER_LEAD`, `MAX_CANDIDATES_MATCHED`, `MIN_CONTENT_CHARS`).
 
+## Deploy (Render) — so a teammate can use it
+
+This app needs a **persistent process** (background worker + SQLite), so it runs on
+Render/Railway/Fly, **not** Vercel (serverless would time out on the 3–4 min jobs and
+lose the SQLite DB).
+
+1. Push this repo to GitHub (see below).
+2. Go to https://render.com → **New → Blueprint** → connect this repo. It reads
+   `render.yaml`.
+3. Render will prompt for the four secret keys (`OPENROUTER_API_KEY`, `TAVILY_API_KEY`,
+   `FIRECRAWL_API_KEY`, `APIFY_API_TOKEN`). Paste them there — they are **not** in the repo.
+4. Deploy. You get a public URL like `https://leadsearch.onrender.com` to share.
+
+Notes:
+- **Free tier** sleeps after ~15 min idle (first request then cold-starts ~30s) and
+  uses an ephemeral disk, so the leads DB resets on redeploy. Fine for trying; for
+  durable data add a Render Disk (paid) or a hosted Postgres.
+- **No login is built in** — anyone with the URL can run leads and spend your API
+  credits. Keep the URL private, or ask me to add basic auth before sharing widely.
+
 ## Next steps (not built yet)
 
 - Google Sheets input/output (the input layer is already isolated for this).

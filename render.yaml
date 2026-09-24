@@ -1,0 +1,31 @@
+# Render deploy config. Connect this repo at https://render.com → New → Blueprint.
+# Render runs a persistent process (unlike Vercel), so the background worker and
+# SQLite work fine. Secret keys are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: leadsearch
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # --- secrets: sync:false => Render asks you to paste them in the dashboard ---
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: APIFY_API_TOKEN
+        sync: false
+      # --- non-secret defaults (edit in dashboard anytime) ---
+      - key: OPENROUTER_MODEL
+        value: anthropic/claude-sonnet-4.5
+      - key: APIFY_LINKEDIN_ACTOR
+        value: harvestapi/linkedin-profile-scraper
+      - key: APIFY_LINKEDIN_SEARCH_ACTOR
+        value: harvestapi/linkedin-profile-search-by-name
+      - key: APIFY_LINKEDIN_SEARCH_MODE
+        value: Full
