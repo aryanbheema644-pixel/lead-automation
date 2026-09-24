@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .pipeline import orchestrator
+from .pipeline import llm, orchestrator
 
 app = FastAPI(title="LeadSearch")
 STATIC_DIR = config.ROOT / "app" / "static"
@@ -20,18 +20,6 @@ STATIC_DIR = config.ROOT / "app" / "static"
 def _startup() -> None:
     db.init_db()
 
-
-# ── Column aliases for flexible CSV headers ───────────────────────────────
-_ALIASES = {
-    "name": {"name", "full name", "fullname", "contact", "lead"},
-    "company": {"company", "organization", "org", "employer"},
-    "email": {"email", "e-mail", "email address"},
-    "phone": {"phone", "phone number", "mobile", "tel", "telephone", "number",
-              "contact number", "mobile number"},
-    "linkedin": {"linkedin", "linkedin profile url", "linkedin url",
-                 "linkedin profile", "li url"},
-    "message": {"message", "notes", "note", "comment", "about", "bio"},
-}
 
 # A LinkedIn URL or bare handle, e.g. "linkedin.com/in/foo" or "uk.linkedin.com/in/foo".
 _LI_URL_RE = re.compile(r"(https?://[^\s,;]+|(?:[a-z]{2,3}\.)?linkedin\.com/[^\s,;]+)", re.I)
@@ -65,28 +53,6 @@ def resolve_linkedin(li_cell: str, message: str) -> tuple[str, bool]:
     return "", False
 
 
-def _map_headers(fieldnames: list[str]) -> dict:
-    mapping = {}
-    for field in fieldnames or []:
-        key = field.strip().lower()
-        for canonical, names in _ALIASES.items():
-            if key in names and canonical not in mapping:  # first column wins
-                mapping[canonical] = field
-                break
-    return mapping
-
-
-# Positional column order for headerless exports (the CRM's native layout):
-# Name, Email, Number, LinkedIn URL, Visa, Message, ...
-_POSITIONAL = {"name": 0, "email": 1, "phone": 2, "linkedin": 3, "message": 5}
-
-
-def _looks_headerless(first_row: list[str]) -> bool:
-    """A real header row has no email/phone values in it; a data row does."""
-    joined = " ".join(first_row)
-    return "@" in joined  # an email in row 1 means it's data, not a header
-
-
 def _insert_row(val) -> bool:
     if not any(val(k) for k in ("name", "company", "email", "phone", "message")):
         return False
@@ -94,6 +60,20 @@ def _insert_row(val) -> bool:
     db.insert_lead(val("name"), val("company"), val("email"),
                    val("phone"), val("message"), url, 1 if optout else 0)
     return True
+
+
+def _indices(mapping: dict, key: str) -> list[int]:
+    """Normalize a mapping value (int | list | null) to a list of column indices."""
+    v = mapping.get(key)
+    if v is None:
+        return []
+    out = []
+    for x in (v if isinstance(v, list) else [v]):
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 @app.post("/api/upload")
@@ -104,40 +84,32 @@ async def upload(file: UploadFile) -> JSONResponse:
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
 
-    all_rows = list(csv.reader(io.StringIO(text)))
-    if not all_rows:
+    rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
+    if not rows:
         raise HTTPException(400, "The CSV is empty.")
 
-    count = 0
-    if _looks_headerless(all_rows[0]):
-        # No header — map by fixed column position.
-        mapping = {k: f"col{v}" for k, v in _POSITIONAL.items()}
-        for row in all_rows:
-            def val(k: str, _row=row) -> str:
-                i = _POSITIONAL.get(k)
-                return (_row[i].strip() if i is not None and i < len(_row) else "")
-            if _insert_row(val):
-                count += 1
-        return JSONResponse({"inserted": count, "mapped_columns": mapping,
-                             "header_detected": False})
+    # Let the LLM figure out which column is which (handles messy/renamed headers,
+    # split first/last name, headerless files, reordered or partial columns).
+    try:
+        mapping = llm.map_columns(rows[:5])
+    except llm.LLMError as e:
+        raise HTTPException(400, f"Could not map columns (LLM): {e}")
 
-    # Header row present — map columns by name.
-    reader = csv.DictReader(io.StringIO(text))
-    mapping = _map_headers(reader.fieldnames or [])
-    if "name" not in mapping:
-        raise HTTPException(
-            400,
-            f"Could not find a Name column. Detected headers: {reader.fieldnames}. "
-            f"Expected one of: Name, Company, Email, Phone, Message.",
-        )
-    for row in reader:
-        def val(k: str, _row=row) -> str:
-            col = mapping.get(k)
-            return (_row.get(col, "") or "").strip() if col else ""
+    has_header = bool(mapping.get("has_header"))
+    data_rows = rows[1:] if has_header else rows
+
+    count = 0
+    for row in data_rows:
+        def val(key: str, _row=row) -> str:
+            cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
+            return " ".join(c for c in cells if c).strip()
         if _insert_row(val):
             count += 1
-    return JSONResponse({"inserted": count, "mapped_columns": mapping,
-                         "header_detected": True})
+
+    mapped = {k: mapping.get(k) for k in
+              ("name", "company", "email", "phone", "linkedin", "message")}
+    return JSONResponse({"inserted": count, "mapped_columns": mapped,
+                         "header_detected": has_header})
 
 
 @app.post("/api/run")

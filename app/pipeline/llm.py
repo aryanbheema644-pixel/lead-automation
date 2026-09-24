@@ -77,6 +77,47 @@ def chat_json(system: str, user: str, *, max_tokens: int = 1500) -> Any:
     return _extract_json(content)
 
 
+# ── Step 0: map arbitrary CSV columns to canonical fields ────────────────
+MAP_SYS = (
+    "You map the columns of a CSV of leads to a fixed set of canonical fields. "
+    "You are given the first few rows exactly as parsed (a list of rows, each a "
+    "list of cell strings). First decide whether row 0 is a HEADER row (column "
+    "names) or already DATA. Then, for each canonical field, give the 0-based "
+    "COLUMN INDEX that holds it, or null if it is not present:\n"
+    "- name: the person's full name. If first and last name are in SEPARATE "
+    "columns, return a LIST of indices to join in order, e.g. [1,2].\n"
+    "- company: the person's employer/organization (ignore generic email hosts).\n"
+    "- email, phone: contact columns.\n"
+    "- linkedin: a column holding a LinkedIn URL/handle.\n"
+    "- message: the main free-text note / enquiry / bio / 'about' column.\n"
+    "Ignore unrelated columns (dates, times, status, visa type, deal title, "
+    "source, owner, etc).\n"
+    "The data is often MESSY: headers may be prefixed or renamed (e.g. 'Person - "
+    "First name', 'Contact Email Address', 'Mobile No.', 'Deal - Title'), there "
+    "may be extra/blank columns, inconsistent spacing, or NO header row at all. "
+    "Do not rely on header text alone — also look at the actual cell VALUES in the "
+    "sample rows to decide (a cell with '@' is an email, digits/'+' is a phone, "
+    "text containing 'linkedin.com' is linkedin, a short 'First Last' string is a "
+    "name, a long sentence is the message). If row 0 has header-like labels and no "
+    "real values, it is a header. Pick the single best column per field; if none "
+    "fits, use null. Respond ONLY with a JSON object."
+)
+MAP_SCHEMA = (
+    '{"has_header": bool, "name": int|[int,...]|null, "company": int|null, '
+    '"email": int|null, "phone": int|null, "linkedin": int|null, "message": int|null}'
+)
+
+
+def map_columns(sample_rows: list[list[str]]) -> dict:
+    """Ask the LLM which columns map to which canonical field (one call/upload)."""
+    user = (
+        f"Rows (row 0 first):\n{json.dumps(sample_rows[:5], ensure_ascii=False)}\n\n"
+        f"Return JSON with exactly these keys: {MAP_SCHEMA}."
+    )
+    out = chat_json(MAP_SYS, user, max_tokens=400)
+    return out if isinstance(out, dict) else {}
+
+
 # ── Step 2: extract & normalize ──────────────────────────────────────────
 EXTRACT_SYS = (
     "You are a data-extraction engine for a lead-enrichment pipeline. "
