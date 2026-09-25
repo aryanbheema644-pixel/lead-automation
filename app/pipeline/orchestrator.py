@@ -125,12 +125,9 @@ def process_lead(lead_id: int) -> None:
                 }
             )
 
-        # Display order: LinkedIn candidates always first (topmost priority),
-        # highest score within each group. The decision below picks the profile.
-        candidates.sort(
-            key=lambda c: (c.get("source_type") == "linkedin", c.get("score", 0.0) or 0.0),
-            reverse=True,
-        )
+        # Display order: highest match score first (best match on top). The
+        # decision below still applies LinkedIn priority when choosing the profile.
+        candidates.sort(key=lambda c: c.get("score", 0.0) or 0.0, reverse=True)
 
         # Step 8 — decide (LinkedIn-priority logic; returns the chosen profile)
         status, confidence, reasoning, chosen = decide(candidates)
