@@ -91,11 +91,29 @@ function confBar(score) {
   return `<span class="conf-bar"><span class="conf-fill" style="width:${pct}%;background:${color}"></span></span><span class="conf-num">${score.toFixed(2)}</span>`;
 }
 
+const SOURCE_LABELS = {
+  linkedin: "LinkedIn profile",
+  scholar: "Google Scholar / ResearchGate",
+  github: "GitHub",
+  company: "Company page",
+  imdb: "IMDb",
+  social: "Social profile",
+  news: "News / article",
+  pdf: "PDF document",
+  personal_or_other: "Personal site / other",
+};
+
+function prettyUrl(url) {
+  let u = String(url || "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
+  return u.length > 44 ? u.slice(0, 44) + "…" : u;
+}
+
 function topMatch(lead) {
   const c = (lead.candidates || [])[0];
   if (!c) return '<span class="sub">—</span>';
-  const host = (() => { try { return new URL(c.url).hostname.replace("www.", ""); } catch { return c.url; } })();
-  return `<span class="cand-type">${c.source_type}</span><br><a href="${c.url}" target="_blank" rel="noopener">${host}</a>`;
+  const label = SOURCE_LABELS[c.source_type] || c.source_type;
+  return `<div class="tm-label">${esc(label)}</div>`
+       + `<a class="tm-url" href="${c.url}" target="_blank" rel="noopener">${esc(prettyUrl(c.url))}</a>`;
 }
 
 async function loadLeads() {
@@ -103,7 +121,7 @@ async function loadLeads() {
   const { leads } = await r.json();
   const tbody = $("#leadRows");
   if (!leads.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty">No leads in this view.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">No leads in this view.</td></tr>`;
     return;
   }
   tbody.innerHTML = leads.map((l) => `
@@ -113,7 +131,6 @@ async function loadLeads() {
       <td>${esc(l.company || "—")}</td>
       <td>${badge(l.status, l.stage)}</td>
       <td>${topMatch(l)}</td>
-      <td>${confBar(l.confidence)}</td>
       <td>${rowActions(l)}</td>
     </tr>`).join("");
   tbody.querySelectorAll("[data-open]").forEach((b) =>
