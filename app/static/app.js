@@ -114,10 +114,39 @@ async function loadLeads() {
       <td>${badge(l.status, l.stage)}</td>
       <td>${topMatch(l)}</td>
       <td>${confBar(l.confidence)}</td>
-      <td><button class="link-btn" data-open="${l.id}">Details ▸</button></td>
+      <td>${rowActions(l)}</td>
     </tr>`).join("");
   tbody.querySelectorAll("[data-open]").forEach((b) =>
     b.addEventListener("click", () => openDrawer(b.dataset.open)));
+  tbody.querySelectorAll("[data-accept]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); acceptTop(b.dataset.accept); }));
+  tbody.querySelectorAll("[data-reject]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); rejectLead(b.dataset.reject); }));
+}
+
+function rowActions(l) {
+  let btns = "";
+  if (l.status === "review") {
+    btns += `<button class="mini ok" data-accept="${l.id}">Accept</button>`
+          + `<button class="mini no" data-reject="${l.id}">Reject</button>`;
+  } else if (l.status === "accepted") {
+    btns += `<button class="mini no" data-reject="${l.id}">Reject</button>`;
+  }
+  btns += `<button class="link-btn" data-open="${l.id}">Details ▸</button>`;
+  return `<div class="row-actions">${btns}</div>`;
+}
+
+// Accept the highest-scored candidate (top of the list) directly from the row.
+async function acceptTop(id) {
+  await fetch(`/api/leads/${id}/choose`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_index: 0 }),
+  });
+  refresh();
+}
+async function rejectLead(id) {
+  await fetch(`/api/leads/${id}/reject`, { method: "POST" });
+  refresh();
 }
 
 async function loadStats() {
