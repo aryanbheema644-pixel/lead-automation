@@ -76,6 +76,19 @@ MAX_LINKEDIN_CANDIDATES = _get_int("MAX_LINKEDIN_CANDIDATES", 3)
 MIN_CONTENT_CHARS = _get_int("MIN_CONTENT_CHARS", 600)
 
 
+# Screening console (RAG fit-evaluator, hosted by the ForRAG service).
+# POST a profile JSON -> get a fit verdict. Base URL + key kept here so we can flip
+# to the secured/HTTPS endpoint in one place once auth is deployed.
+SCREENING_URL = _get("SCREENING_URL", "http://150.230.237.181/api/screen")
+SCREENING_API_KEY = _get("SCREENING_API_KEY")          # X-API-Key header (blank for now)
+SCREENING_ENABLED = _get("SCREENING_ENABLED", "true").lower() in ("1", "true", "yes")
+SCREENING_TIMEOUT = _get_int("SCREENING_TIMEOUT", 60)
+
+
+def screening_ready() -> bool:
+    return bool(SCREENING_ENABLED and SCREENING_URL)
+
+
 # Google Sheets (service-account). Read from a source sheet, write to a dest sheet.
 # GOOGLE_SERVICE_ACCOUNT_JSON: the service-account key, as raw JSON or a file path.
 GOOGLE_SERVICE_ACCOUNT_JSON = _get("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -97,6 +110,7 @@ def provider_status() -> dict:
         "tavily": bool(TAVILY_API_KEY),
         "firecrawl": bool(FIRECRAWL_API_KEY),
         "apify": bool(APIFY_API_TOKEN and APIFY_LINKEDIN_ACTOR),
+        "screening": screening_ready(),
         "sheets": sheets_ready(),
         "source_sheet": bool(GOOGLE_SOURCE_SHEET_ID),
         "dest_sheet": bool(GOOGLE_DEST_SHEET_ID),

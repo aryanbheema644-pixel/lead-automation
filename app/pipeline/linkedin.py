@@ -131,6 +131,23 @@ def fetch_linkedin(url: str) -> str:
     return _format_profile(items[0] if isinstance(items, list) else items)
 
 
+def fetch_linkedin_raw(url: str, retries: int = 1):
+    """Scrape a LinkedIn URL and return the RAW actor profile dict (for screening),
+    or None if the actor returned nothing / only an error item. Retries once on
+    empty, since harvestapi occasionally returns transient empties."""
+    if not (config.APIFY_API_TOKEN and config.APIFY_LINKEDIN_ACTOR):
+        return None
+    from .profile_view import is_actor_error
+    for attempt in range(retries + 1):
+        items = _run_actor(config.APIFY_LINKEDIN_ACTOR, _build_input(url))
+        for it in items:
+            if isinstance(it, dict) and not is_actor_error(it) and (
+                it.get("firstName") or it.get("headline") or it.get("experience")
+            ):
+                return it
+    return None
+
+
 def _run_actor(actor: str, payload: dict, timeout: int = 240) -> list:
     """Run an Apify actor synchronously and return dataset items."""
     actor = actor.replace("/", "~")
