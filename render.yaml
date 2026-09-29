@@ -20,6 +20,17 @@ services:
         sync: false
       - key: APIFY_API_TOKEN
         sync: false
+      # --- Google Sheets (optional): set in dashboard to enable Pull/Push ---
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_SOURCE_SHEET_ID
+        sync: false
+      - key: GOOGLE_DEST_SHEET_ID
+        sync: false
+      - key: GOOGLE_SOURCE_TAB
+        sync: false
+      - key: GOOGLE_DEST_TAB
+        sync: false
       # --- non-secret defaults (edit in dashboard anytime) ---
       - key: OPENROUTER_MODEL
         value: anthropic/claude-sonnet-4.5

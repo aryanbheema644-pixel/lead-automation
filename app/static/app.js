@@ -67,6 +67,30 @@ $("#resetBtn").addEventListener("click", async () => {
   refresh();
 });
 
+// ── Google Sheets pull / push ────────────────────────────────────────────────
+$("#pullBtn").addEventListener("click", async () => {
+  const msg = $("#uploadMsg");
+  msg.className = "msg"; msg.textContent = "Pulling leads from the source sheet…";
+  try {
+    const data = await readResponse(await fetch("/api/sheets/pull", { method: "POST" }));
+    msg.className = "msg ok";
+    msg.textContent = `Pulled ${data.inserted} leads from the sheet. Click “Run pipeline”.`;
+    refresh();
+  } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
+});
+
+$("#pushBtn").addEventListener("click", async () => {
+  const msg = $("#uploadMsg");
+  msg.className = "msg"; msg.textContent = "Pushing refined leads to the destination sheet…";
+  try {
+    const data = await readResponse(await fetch("/api/sheets/push", { method: "POST" }));
+    msg.className = "msg ok";
+    msg.textContent = data.pushed
+      ? `Pushed ${data.pushed} refined leads to the destination sheet.`
+      : (data.note || "Nothing new to push.");
+  } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
+});
+
 // ── Filters ─────────────────────────────────────────────────────────────────
 $("#filters").addEventListener("click", (e) => {
   const btn = e.target.closest(".chip");
@@ -180,9 +204,14 @@ async function loadStats() {
   const prov = [
     ["OpenRouter", p.openrouter, p.model],
     ["Tavily", p.tavily], ["Firecrawl", p.firecrawl], ["Apify", p.apify],
+    ["Sheets", p.sheets],
   ];
   $("#providers").innerHTML = prov.map(([name, on, extra]) =>
     `<span class="pill ${on ? "on" : ""}" title="${extra || ""}"><span class="dot"></span>${name}</span>`).join("");
+
+  // Show the Sheet buttons only when the relevant sheet is configured.
+  $("#pullBtn").hidden = !(p.sheets && p.source_sheet);
+  $("#pushBtn").hidden = !(p.sheets && p.dest_sheet);
 
   if (!running && (stats.queued === 0 && stats.processing === 0)) stopPolling();
   return running;

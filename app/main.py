@@ -4,12 +4,13 @@ from __future__ import annotations
 import csv
 import io
 import re
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db
+from . import config, db, sheets
 from .pipeline import llm, orchestrator
 
 app = FastAPI(title="LeadSearch")
@@ -76,6 +77,27 @@ def _indices(mapping: dict, key: str) -> list[int]:
     return out
 
 
+def _ingest_rows(rows: list[list[str]]) -> tuple[int, dict]:
+    """Map columns via the LLM, then insert each data row as a queued lead.
+    Shared by CSV upload and Google Sheet pull. Returns (inserted, mapping)."""
+    rows = [r for r in rows if any((c or "").strip() for c in r)]
+    if not rows:
+        return 0, {}
+    try:
+        mapping = llm.map_columns(rows[:5])
+    except llm.LLMError as e:
+        raise HTTPException(400, f"Could not map columns (LLM): {e}")
+    data_rows = rows[1:] if mapping.get("has_header") else rows
+    count = 0
+    for row in data_rows:
+        def val(key: str, _row=row) -> str:
+            cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
+            return " ".join(c for c in cells if c).strip()
+        if _insert_row(val):
+            count += 1
+    return count, mapping
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile) -> JSONResponse:
     raw = await file.read()
@@ -87,29 +109,73 @@ async def upload(file: UploadFile) -> JSONResponse:
     rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
     if not rows:
         raise HTTPException(400, "The CSV is empty.")
-
-    # Let the LLM figure out which column is which (handles messy/renamed headers,
-    # split first/last name, headerless files, reordered or partial columns).
-    try:
-        mapping = llm.map_columns(rows[:5])
-    except llm.LLMError as e:
-        raise HTTPException(400, f"Could not map columns (LLM): {e}")
-
-    has_header = bool(mapping.get("has_header"))
-    data_rows = rows[1:] if has_header else rows
-
-    count = 0
-    for row in data_rows:
-        def val(key: str, _row=row) -> str:
-            cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
-            return " ".join(c for c in cells if c).strip()
-        if _insert_row(val):
-            count += 1
-
+    count, mapping = _ingest_rows(rows)
     mapped = {k: mapping.get(k) for k in
               ("name", "company", "email", "phone", "linkedin", "message")}
     return JSONResponse({"inserted": count, "mapped_columns": mapped,
-                         "header_detected": has_header})
+                         "header_detected": bool(mapping.get("has_header"))})
+
+
+# Destination-sheet columns for refined leads.
+_DEST_HEADER = ["Name", "Email", "Phone", "Company", "Location", "Role",
+                "LinkedIn / Match URL", "Source", "Status", "Confidence",
+                "Reasoning", "Processed At (UTC)"]
+
+
+def _dest_row(l: dict) -> list:
+    chosen = l.get("chosen") or {}
+    person = chosen.get("person") or {}
+    ex = l.get("extracted") or {}
+    return [
+        person.get("name") or l.get("name", ""),
+        l.get("email", ""),
+        l.get("phone", ""),
+        person.get("company") or ex.get("company", ""),
+        person.get("location") or ex.get("location", ""),
+        person.get("role") or ex.get("role_guess", ""),
+        chosen.get("url", ""),
+        chosen.get("source_type", ""),
+        l.get("status", ""),
+        l.get("confidence", "") if l.get("confidence") is not None else "",
+        (l.get("reasoning", "") or "").replace("\n", " "),
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    ]
+
+
+@app.post("/api/sheets/pull")
+def sheets_pull() -> JSONResponse:
+    """Read new leads from the source Google Sheet into the queue."""
+    if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
+        raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
+    if not config.GOOGLE_SOURCE_SHEET_ID:
+        raise HTTPException(400, "No source sheet configured (GOOGLE_SOURCE_SHEET_ID).")
+    try:
+        rows = sheets.read_source_rows()
+    except sheets.SheetsError as e:
+        raise HTTPException(400, str(e))
+    count, _ = _ingest_rows(rows)
+    return JSONResponse({"inserted": count})
+
+
+@app.post("/api/sheets/push")
+def sheets_push() -> JSONResponse:
+    """Write refined (processed, not-yet-pushed) leads to the destination sheet."""
+    if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
+        raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
+    if not config.GOOGLE_DEST_SHEET_ID:
+        raise HTTPException(400, "No destination sheet configured (GOOGLE_DEST_SHEET_ID).")
+    done = {"accepted", "review", "rejected"}
+    leads = [l for l in db.list_leads()
+             if l.get("status") in done and not l.get("pushed")]
+    if not leads:
+        return JSONResponse({"pushed": 0, "note": "No new refined leads to push."})
+    try:
+        sheets.append_dest_rows(_DEST_HEADER, [_dest_row(l) for l in leads])
+    except sheets.SheetsError as e:
+        raise HTTPException(400, str(e))
+    for l in leads:
+        db.update_lead(l["id"], pushed=1)
+    return JSONResponse({"pushed": len(leads)})
 
 
 @app.post("/api/run")

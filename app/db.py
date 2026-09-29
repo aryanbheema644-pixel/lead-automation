@@ -38,6 +38,7 @@ _COLUMNS = {
     "confidence": "REAL",
     "reasoning": "TEXT",
     "error": "TEXT",
+    "pushed": "INTEGER DEFAULT 0",
     "created_at": "REAL",
     "updated_at": "REAL",
 }

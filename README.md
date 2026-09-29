@@ -73,6 +73,32 @@ CSV columns are matched flexibly (case-insensitive; `Name`/`Full Name`, `Company
 Thresholds and caps live in `.env` (`ACCEPT_THRESHOLD`, `REVIEW_THRESHOLD`,
 `MAX_RESULTS_PER_LEAD`, `MAX_CANDIDATES_MATCHED`, `MIN_CONTENT_CHARS`).
 
+## Connect Google Sheets (read source → refine → write destination)
+
+Reads leads from a **source** sheet (e.g. the one Pipedrive feeds) and writes the
+refined leads to a **destination** sheet. Uses a Google **service account** — no
+browser login, works on the server.
+
+**One-time setup:**
+1. https://console.cloud.google.com → create/select a project.
+2. **APIs & Services → Library →** enable **Google Sheets API**.
+3. **APIs & Services → Credentials → Create credentials → Service account.** Create it,
+   then under its **Keys** tab → **Add key → JSON** → download the file.
+4. Copy the service account's **email** (looks like `name@project.iam.gserviceaccount.com`).
+5. **Share your sheets with that email** (the Share button, like sharing with a person):
+   - **Source** sheet → **Viewer** (read only)
+   - **Destination** sheet → **Editor** (so it can write)
+6. Set env vars (locally in `.env`, or in the Render dashboard):
+   - `GOOGLE_SERVICE_ACCOUNT_JSON` = the whole JSON file contents (or a path to it)
+   - `GOOGLE_SOURCE_SHEET_ID` / `GOOGLE_DEST_SHEET_ID` = the long ID in each sheet's URL:
+     `https://docs.google.com/spreadsheets/d/<THIS_IS_THE_ID>/edit`
+   - `GOOGLE_SOURCE_TAB` / `GOOGLE_DEST_TAB` = tab name (optional; blank = first tab)
+
+**Use it:** the dashboard shows **⬇ Pull from Sheet** (imports source rows into the
+queue → then Run pipeline) and **⬆ Push to Sheet** (writes processed leads to the
+destination sheet; each lead is pushed once). Google is read-*or*-write purely by how
+you share each sheet — the API itself supports both.
+
 ## Deploy (Render) — so a teammate can use it
 
 This app needs a **persistent process** (background worker + SQLite), so it runs on

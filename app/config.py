@@ -76,6 +76,19 @@ MAX_LINKEDIN_CANDIDATES = _get_int("MAX_LINKEDIN_CANDIDATES", 3)
 MIN_CONTENT_CHARS = _get_int("MIN_CONTENT_CHARS", 600)
 
 
+# Google Sheets (service-account). Read from a source sheet, write to a dest sheet.
+# GOOGLE_SERVICE_ACCOUNT_JSON: the service-account key, as raw JSON or a file path.
+GOOGLE_SERVICE_ACCOUNT_JSON = _get("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SOURCE_SHEET_ID = _get("GOOGLE_SOURCE_SHEET_ID")   # sheet the leads come from
+GOOGLE_SOURCE_TAB = _get("GOOGLE_SOURCE_TAB")             # tab name; blank = first tab
+GOOGLE_DEST_SHEET_ID = _get("GOOGLE_DEST_SHEET_ID")       # sheet refined leads go to
+GOOGLE_DEST_TAB = _get("GOOGLE_DEST_TAB")                 # tab name; blank = first tab
+
+
+def sheets_ready() -> bool:
+    return bool(GOOGLE_SERVICE_ACCOUNT_JSON)
+
+
 def provider_status() -> dict:
     """Which integrations are configured — surfaced in the UI health panel."""
     return {
@@ -84,5 +97,8 @@ def provider_status() -> dict:
         "tavily": bool(TAVILY_API_KEY),
         "firecrawl": bool(FIRECRAWL_API_KEY),
         "apify": bool(APIFY_API_TOKEN and APIFY_LINKEDIN_ACTOR),
+        "sheets": sheets_ready(),
+        "source_sheet": bool(GOOGLE_SOURCE_SHEET_ID),
+        "dest_sheet": bool(GOOGLE_DEST_SHEET_ID),
         "thresholds": {"accept": ACCEPT_THRESHOLD, "review": REVIEW_THRESHOLD},
     }
