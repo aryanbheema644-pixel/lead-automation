@@ -22,9 +22,13 @@ def _startup() -> None:
     db.init_db()
 
 
-# A LinkedIn URL or bare handle, e.g. "linkedin.com/in/foo" or "uk.linkedin.com/in/foo".
-_LI_URL_RE = re.compile(r"(https?://[^\s,;]+|(?:[a-z]{2,3}\.)?linkedin\.com/[^\s,;]+)", re.I)
-# Phrases where the lead says they have no LinkedIn -> skip discovery entirely.
+# A LinkedIn URL, tolerant of distortions: optional scheme, any/garbled subdomain
+# (www / w / ww / in / uk / none), embedded in surrounding text.
+_LINKEDIN_RE = re.compile(r"(?:https?://)?[a-z0-9.\-]*linkedin\.com/[^\s,;\"'>)\]]+", re.I)
+# Any other URL (http(s):// or www.), used to spot a non-LinkedIn link.
+_ANY_URL_RE = re.compile(r"(?:https?://|www\.)[^\s,;\"'>)\]]+", re.I)
+_TRIM = ".,;)]'\""
+# Phrases where the lead says they have no LinkedIn -> add directly, no discovery.
 _LI_OPTOUT = (
     "don't have", "do not have", "dont have", "no linkedin", "not on linkedin",
     "don't use", "dont use", "no profile", "i don't have", "not available",
@@ -32,34 +36,68 @@ _LI_OPTOUT = (
 )
 
 
-def resolve_linkedin(li_cell: str, message: str) -> tuple[str, bool]:
-    """Interpret the free-text LinkedIn column (and message).
+def _normalize_linkedin(text: str) -> str:
+    """Extract and canonicalize a LinkedIn URL from messy text; '' if none.
+    Fixes scheme/subdomain distortions -> https://www.linkedin.com/<path>."""
+    m = _LINKEDIN_RE.search(text or "")
+    if not m:
+        return ""
+    frag = m.group(0).rstrip(_TRIM)
+    i = frag.lower().find("linkedin.com")
+    path = frag[i + len("linkedin.com"):]
+    if not path.startswith("/"):
+        path = "/" + path
+    return "https://www.linkedin.com" + path
 
-    Returns (url, optout):
-      * url    — a LinkedIn URL found in the cell or the message ("check me at ..."),
-                 normalized with a scheme; empty if none.
-      * optout — True if the lead explicitly says they have no LinkedIn, so we
-                 should NOT run discovery for them.
-    """
-    for src in (li_cell, message):
-        m = _LI_URL_RE.search(src or "")
-        if m and "linkedin.com" in m.group(0).lower():
-            url = m.group(0).rstrip(".,;)")
-            if not url.lower().startswith("http"):
-                url = "https://" + url
-            return url, False
-    blob = f"{li_cell} {message}".lower()
+
+def _first_other_url(text: str) -> str:
+    """A non-LinkedIn URL in the text, normalized with a scheme; '' if none."""
+    for m in _ANY_URL_RE.finditer(text or ""):
+        u = m.group(0).rstrip(_TRIM)
+        if "linkedin.com" in u.lower():
+            continue
+        return u if u.lower().startswith("http") else "https://" + u
+    return ""
+
+
+def classify_linkedin(li_cell: str, message: str) -> dict:
+    """Decide how to route a lead based on its LinkedIn field (and message).
+    Returns {linkedin_url, other_url, optout} — exactly one is meaningful."""
+    for src in (li_cell, message):               # a LinkedIn URL, even distorted
+        url = _normalize_linkedin(src)
+        if url:
+            return {"linkedin_url": url, "other_url": "", "optout": False}
+    other = _first_other_url(li_cell)            # a non-LinkedIn link in the field
+    if other:
+        return {"linkedin_url": "", "other_url": other, "optout": False}
+    blob = f"{li_cell} {message}".lower()        # explicit "no LinkedIn"
     if any(p in blob for p in _LI_OPTOUT):
-        return "", True
-    return "", False
+        return {"linkedin_url": "", "other_url": "", "optout": True}
+    return {"linkedin_url": "", "other_url": "", "optout": False}
 
 
 def _insert_row(val) -> bool:
     if not any(val(k) for k in ("name", "company", "email", "phone", "message")):
         return False
-    url, optout = resolve_linkedin(val("linkedin"), val("message"))
-    db.insert_lead(val("name"), val("company"), val("email"),
-                   val("phone"), val("message"), url, 1 if optout else 0)
+    info = classify_linkedin(val("linkedin"), val("message"))
+    lead_id = db.insert_lead(
+        val("name"), val("company"), val("email"), val("phone"), val("message"),
+        linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
+    )
+    # Routing: only leads with NO usable link (and not opted out) need refinement.
+    if info["linkedin_url"]:
+        db.update_lead(lead_id, status="accepted", stage="provided", confidence=None,
+                       chosen={"url": info["linkedin_url"], "source_type": "linkedin (provided)",
+                               "person": {}},
+                       reasoning="LinkedIn URL provided by the lead — no refinement needed.")
+    elif info["other_url"]:
+        db.update_lead(lead_id, status="accepted", stage="provided", confidence=None,
+                       chosen={"url": info["other_url"], "source_type": "other link", "person": {}},
+                       reasoning="A non-LinkedIn link was provided; added directly, not verified.")
+    elif info["optout"]:
+        db.update_lead(lead_id, status="accepted", stage="no_linkedin", confidence=None,
+                       chosen={}, reasoning="Lead has no LinkedIn; added directly.")
+    # else: stays 'queued' -> the pipeline will refine (discover the LinkedIn).
     return True
 
 
