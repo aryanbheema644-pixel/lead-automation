@@ -3,6 +3,14 @@
 .env.local
 *.env
 
+# Google service-account keys / credentials
+service_account*.json
+*service-account*.json
+*-sa.json
+gcp*.json
+credentials*.json
+client_secret*.json
+
 # Python
 __pycache__/
 *.py[cod]
