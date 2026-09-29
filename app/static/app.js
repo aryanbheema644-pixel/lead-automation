@@ -74,7 +74,10 @@ $("#pullBtn").addEventListener("click", async () => {
   try {
     const data = await readResponse(await fetch("/api/sheets/pull", { method: "POST" }));
     msg.className = "msg ok";
-    msg.textContent = `Pulled ${data.inserted} leads from the sheet. Click “Run pipeline”.`;
+    const breakdown = data.tabs
+      ? " (" + Object.entries(data.tabs).map(([t, n]) => `${t}: ${n}`).join(", ") + ")"
+      : "";
+    msg.textContent = `Pulled ${data.inserted} leads${breakdown}. Click “Run pipeline”.`;
     refresh();
   } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
 });

@@ -42,13 +42,31 @@ def _open_ws(sheet_id: str, tab: str):
         raise SheetsError(f"Could not open sheet {sheet_id}: {e}") from e
 
 
-def read_source_rows() -> list[list[str]]:
-    """All rows (including any header) from the source sheet, as strings."""
-    ws = _open_ws(config.GOOGLE_SOURCE_SHEET_ID, config.GOOGLE_SOURCE_TAB)
+def read_source_tabs() -> list[tuple[str, list[list[str]]]]:
+    """Read the source spreadsheet's tabs as (tab_title, rows).
+
+    GOOGLE_SOURCE_TAB:
+      * blank            -> read ALL tabs (e.g. websites / meta ads / other)
+      * "A" or "A, B"    -> read only those named tabs
+    Each tab is column-mapped independently, so different per-source layouts work.
+    """
+    if not config.GOOGLE_SOURCE_SHEET_ID:
+        raise SheetsError("No source sheet configured")
     try:
-        return ws.get_all_values()
+        sh = _client().open_by_key(config.GOOGLE_SOURCE_SHEET_ID)
     except Exception as e:  # noqa: BLE001
-        raise SheetsError(f"Could not read source sheet: {e}") from e
+        raise SheetsError(f"Could not open source sheet: {e}") from e
+
+    cfg = (config.GOOGLE_SOURCE_TAB or "").strip()
+    try:
+        if cfg:
+            names = [t.strip() for t in cfg.split(",") if t.strip()]
+            worksheets = [sh.worksheet(n) for n in names]
+        else:
+            worksheets = sh.worksheets()
+        return [(ws.title, ws.get_all_values()) for ws in worksheets]
+    except Exception as e:  # noqa: BLE001
+        raise SheetsError(f"Could not read source tabs: {e}") from e
 
 
 def append_dest_rows(header: list[str], rows: list[list]) -> int:

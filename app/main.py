@@ -150,11 +150,16 @@ def sheets_pull() -> JSONResponse:
     if not config.GOOGLE_SOURCE_SHEET_ID:
         raise HTTPException(400, "No source sheet configured (GOOGLE_SOURCE_SHEET_ID).")
     try:
-        rows = sheets.read_source_rows()
+        tabs = sheets.read_source_tabs()
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
-    count, _ = _ingest_rows(rows)
-    return JSONResponse({"inserted": count})
+    total = 0
+    per_tab = {}
+    for title, rows in tabs:
+        count, _ = _ingest_rows(rows)  # map columns per-tab (formats differ per source)
+        per_tab[title] = count
+        total += count
+    return JSONResponse({"inserted": total, "tabs": per_tab})
 
 
 @app.post("/api/sheets/push")
