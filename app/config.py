@@ -10,6 +10,14 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+# Also load a single secrets file if one is mounted (e.g. a Render "Secret File"
+# named `.env` at /etc/secrets/.env). This lets you keep ALL secrets — API keys
+# AND the Google service-account JSON as a single-line value — in one file, which
+# then takes precedence. Override the path with SECRET_ENV_PATH if needed.
+_SECRET_ENV = os.getenv("SECRET_ENV_PATH", "/etc/secrets/.env")
+if os.path.isfile(_SECRET_ENV):
+    load_dotenv(_SECRET_ENV, override=True)
+
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "leadsearch.db"
