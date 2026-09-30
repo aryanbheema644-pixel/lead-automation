@@ -18,8 +18,10 @@ _SECRET_ENV = os.getenv("SECRET_ENV_PATH", "/etc/secrets/.env")
 if os.path.isfile(_SECRET_ENV):
     load_dotenv(_SECRET_ENV, override=True)
 
-DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
+# Where the SQLite DB + data live. Override DATA_DIR to a mounted persistent disk
+# (e.g. a Render Disk at /var/data) so leads + dedup state survive redeploys.
+DATA_DIR = Path(os.getenv("DATA_DIR") or (ROOT / "data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "leadsearch.db"
 
 

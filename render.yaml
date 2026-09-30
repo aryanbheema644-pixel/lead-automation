@@ -54,3 +54,14 @@ services:
         value: "900"
       - key: SCHEDULER_MAX_PER_CYCLE
         value: "50"
+      # To enable reliable automation, also set DATA_DIR to the disk mount below:
+      # - key: DATA_DIR
+      #   value: /var/data
+
+    # --- Persistent disk (needed for auto-ingest dedup to survive redeploys) ---
+    # Requires a PAID instance (Starter+). Uncomment this, set plan to "starter",
+    # and set the DATA_DIR env var above to /var/data. ~$0.25/GB/mo.
+    # disk:
+    #   name: leadsearch-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
