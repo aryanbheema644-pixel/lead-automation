@@ -9,12 +9,50 @@ from __future__ import annotations
 import threading
 
 from .. import config, db
-from . import llm
+from . import llm, screening
 from .classify import classify
 from .decision import decide
 from .fetch import acquire_content
-from .linkedin import search_by_name
+from .linkedin import fetch_linkedin_raw, search_by_name
+from .profile_view import to_pdf_view
 from .search import linkedin_search, search_many
+
+
+def _person_from_profile(p: dict) -> dict:
+    """Derive display fields (for the sheet) from a scraped/trimmed profile."""
+    exp = p.get("experience") or []
+    company = exp[0].get("companyName") if exp and isinstance(exp[0], dict) else ""
+    name = " ".join(x for x in [p.get("firstName"), p.get("lastName")] if x)
+    return {
+        "name": name,
+        "role": p.get("headline") or "",
+        "company": company or "",
+        "location": p.get("location") or "",
+        "links": [p.get("linkedinUrl")] if p.get("linkedinUrl") else [],
+    }
+
+
+def _screen_lead(lead_id: int, chosen: dict) -> dict | None:
+    """Scrape the chosen LinkedIn profile and run it through the screening console.
+    Returns a flat screening summary (or a note dict) and enriches `chosen.person`.
+    Returns None if there's no LinkedIn URL to screen."""
+    url = (chosen or {}).get("url", "")
+    if not url or "linkedin.com" not in url.lower():
+        return None
+    if not config.screening_ready():
+        return {"note": "screening not configured"}
+    _set_stage(lead_id, "scraping profile")
+    raw = fetch_linkedin_raw(url)
+    if not raw:
+        return {"note": "LinkedIn profile could not be scraped (empty); not screened."}
+    profile = to_pdf_view(raw)
+    chosen["person"] = _person_from_profile(profile)  # enrich sheet fields from real data
+    _set_stage(lead_id, "screening")
+    try:
+        result = screening.screen_profile(profile)
+    except screening.ScreeningError as e:
+        return {"error": f"screening failed: {e}"}
+    return screening.summarize(result)
 
 # One worker at a time keeps rate limits and cost predictable.
 _worker_lock = threading.Lock()
@@ -30,6 +68,22 @@ def process_lead(lead_id: int) -> None:
     if not lead:
         return
     try:
+        # Fast path: the lead already provided a LinkedIn URL -> no refinement
+        # (no search/discovery). Go straight to screening on that URL.
+        provided = (lead.get("linkedin") or "").strip()
+        if provided.startswith("http") and "linkedin.com" in provided.lower():
+            chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
+            screen_summary = _screen_lead(lead_id, chosen)
+            db.update_lead(
+                lead_id, status="accepted", stage="done", confidence=None,
+                candidates=[{"url": provided, "source_type": "linkedin (provided)",
+                             "score": None, "signals": {}, "person": chosen.get("person", {})}],
+                chosen=chosen, screening=screen_summary, screened=1,
+                reasoning="LinkedIn URL provided by the lead — no refinement needed.",
+                error=None,
+            )
+            return
+
         # Step 2 — extract & normalize
         _set_stage(lead_id, "extracting")
         extracted = llm.extract_fields(lead)
@@ -131,6 +185,10 @@ def process_lead(lead_id: int) -> None:
 
         # Step 8 — decide (LinkedIn-priority logic; returns the chosen profile)
         status, confidence, reasoning, chosen = decide(candidates)
+
+        # Step 9 — screen the chosen LinkedIn profile through the RAG console
+        screen_summary = _screen_lead(lead_id, chosen) if chosen else None
+
         db.update_lead(
             lead_id,
             candidates=candidates,
@@ -139,6 +197,8 @@ def process_lead(lead_id: int) -> None:
             confidence=confidence,
             reasoning=reasoning,
             chosen=chosen,
+            screening=screen_summary,
+            screened=1 if screen_summary else 0,
             error=None,
         )
     except Exception as e:  # noqa: BLE001 — surface any failure on the lead itself

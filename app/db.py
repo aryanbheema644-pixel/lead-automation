@@ -38,6 +38,8 @@ _COLUMNS = {
     "confidence": "REAL",
     "reasoning": "TEXT",
     "error": "TEXT",
+    "screening": "TEXT",
+    "screened": "INTEGER DEFAULT 0",
     "pushed": "INTEGER DEFAULT 0",
     "created_at": "REAL",
     "updated_at": "REAL",
@@ -60,7 +62,7 @@ def init_db() -> None:
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
-    for jf in ("extracted", "queries", "candidates", "chosen"):
+    for jf in ("extracted", "queries", "candidates", "chosen", "screening"):
         if d.get(jf):
             try:
                 d[jf] = json.loads(d[jf])
@@ -85,7 +87,7 @@ def insert_lead(name: str, company: str, email: str, phone: str, message: str,
 def update_lead(lead_id: int, **fields: Any) -> None:
     if not fields:
         return
-    for jf in ("extracted", "queries", "candidates", "chosen"):
+    for jf in ("extracted", "queries", "candidates", "chosen", "screening"):
         if jf in fields and not isinstance(fields[jf], (str, type(None))):
             fields[jf] = json.dumps(fields[jf], ensure_ascii=False)
     fields["updated_at"] = time.time()

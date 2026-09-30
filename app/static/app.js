@@ -207,7 +207,7 @@ async function loadStats() {
   const prov = [
     ["OpenRouter", p.openrouter, p.model],
     ["Tavily", p.tavily], ["Firecrawl", p.firecrawl], ["Apify", p.apify],
-    ["Sheets", p.sheets],
+    ["Screening", p.screening], ["Sheets", p.sheets],
   ];
   $("#providers").innerHTML = prov.map(([name, on, extra]) =>
     `<span class="pill ${on ? "on" : ""}" title="${extra || ""}"><span class="dot"></span>${name}</span>`).join("");
@@ -248,9 +248,29 @@ async function openDrawer(id) {
       </div>`;
   }).join("") || '<p class="sub">No candidates.</p>';
 
+  const scr = lead.screening || {};
+  const hasScreen = scr.tier || scr.answer || scr.note || scr.error;
+  const kv = (k, v) => v ? `<span class="k">${k}</span><span>${esc(v)}</span>` : "";
+  const screeningHtml = hasScreen ? `
+    <h3>Screening verdict (RAG fit-eval)</h3>
+    ${scr.tier ? `<div class="sub" style="margin-bottom:8px"><span class="badge accepted">${esc(scr.tier)}</span> ${esc(scr.confidence || "")}</div>` : ""}
+    <div class="kv">
+      ${kv("Best path", scr.best_path)}
+      ${kv("Backup path", scr.backup_path)}
+      ${kv("Key strength", scr.key_strength)}
+      ${kv("Red flag", scr.red_flag)}
+      ${kv("Flip trigger", scr.flip_trigger)}
+      ${kv("Matched cases", scr.matched_cases)}
+      ${kv("Note", scr.note)}
+      ${kv("Error", scr.error)}
+    </div>
+    ${scr.answer ? `<div class="cand-reason" style="white-space:pre-wrap;margin-top:8px">${esc(scr.answer)}</div>` : ""}
+  ` : "";
+
   $("#drawerBody").innerHTML = `
     <h2>${esc(lead.name || "Lead #" + lead.id)}</h2>
     <div class="sub">${badge(lead.status, lead.stage)} ${lead.confidence != null ? confBar(lead.confidence) : ""}</div>
+    ${screeningHtml}
 
     <h3>Raw input</h3>
     <div class="kv">

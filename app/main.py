@@ -84,12 +84,13 @@ def _insert_row(val) -> bool:
         val("name"), val("company"), val("email"), val("phone"), val("message"),
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
     )
-    # Routing: only leads with NO usable link (and not opted out) need refinement.
+    # Routing:
+    #  - provided LinkedIn -> stays 'queued'; the worker skips discovery but still
+    #    scrapes+screens that URL (no search/refinement).
+    #  - non-LinkedIn link / opt-out -> accepted directly (nothing to screen).
+    #  - no usable link -> 'queued' for the full discovery pipeline + screening.
     if info["linkedin_url"]:
-        db.update_lead(lead_id, status="accepted", stage="provided", confidence=None,
-                       chosen={"url": info["linkedin_url"], "source_type": "linkedin (provided)",
-                               "person": {}},
-                       reasoning="LinkedIn URL provided by the lead — no refinement needed.")
+        pass  # queued; process_lead fast-path handles it
     elif info["other_url"]:
         db.update_lead(lead_id, status="accepted", stage="provided", confidence=None,
                        chosen={"url": info["other_url"], "source_type": "other link", "person": {}},
@@ -154,16 +155,19 @@ async def upload(file: UploadFile) -> JSONResponse:
                          "header_detected": bool(mapping.get("has_header"))})
 
 
-# Destination-sheet columns for refined leads.
+# Destination-sheet columns for refined + screened leads.
 _DEST_HEADER = ["Name", "Email", "Phone", "Company", "Location", "Role",
-                "LinkedIn / Match URL", "Source", "Status", "Confidence",
-                "Reasoning", "Processed At (UTC)"]
+                "LinkedIn / Match URL", "Source", "Status",
+                "Fit Tier", "Screen Confidence", "Best Path", "Backup Path",
+                "Key Strength", "Red Flag", "Flip Trigger", "Matched Cases",
+                "Screening Notes", "Match Reasoning", "Processed At (UTC)"]
 
 
 def _dest_row(l: dict) -> list:
     chosen = l.get("chosen") or {}
     person = chosen.get("person") or {}
     ex = l.get("extracted") or {}
+    s = l.get("screening") or {}
     return [
         person.get("name") or l.get("name", ""),
         l.get("email", ""),
@@ -174,7 +178,15 @@ def _dest_row(l: dict) -> list:
         chosen.get("url", ""),
         chosen.get("source_type", ""),
         l.get("status", ""),
-        l.get("confidence", "") if l.get("confidence") is not None else "",
+        s.get("tier", ""),
+        s.get("confidence", ""),
+        s.get("best_path", ""),
+        s.get("backup_path", ""),
+        s.get("key_strength", ""),
+        s.get("red_flag", ""),
+        s.get("flip_trigger", ""),
+        s.get("matched_cases", ""),
+        (s.get("answer") or s.get("note") or s.get("error") or "").replace("\n", " "),
         (l.get("reasoning", "") or "").replace("\n", " "),
         datetime.now(timezone.utc).isoformat(timespec="seconds"),
     ]

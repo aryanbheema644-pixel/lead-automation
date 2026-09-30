@@ -40,3 +40,10 @@ services:
         value: harvestapi/linkedin-profile-search-by-name
       - key: APIFY_LINKEDIN_SEARCH_MODE
         value: Full
+      # --- Screening console (RAG fit-eval) ---
+      - key: SCREENING_URL
+        value: http://150.230.237.181/api/screen
+      - key: SCREENING_ENABLED
+        value: "true"
+      - key: SCREENING_API_KEY
+        sync: false
