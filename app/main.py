@@ -246,10 +246,16 @@ def run() -> JSONResponse:
 
 @app.get("/api/status")
 def status() -> JSONResponse:
+    processing = db.list_leads("processing")
+    current = None
+    if processing:
+        p = processing[0]
+        current = {"stage": p.get("stage"), "name": p.get("name"), "id": p.get("id")}
     return JSONResponse(
         {
             "stats": db.stats(),
             "running": orchestrator.is_running(),
+            "current": current,
             "providers": config.provider_status(),
         }
     )
