@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db, sheets
-from .pipeline import llm, orchestrator
+from .pipeline import distribution, llm, orchestrator
 
 app = FastAPI(title="LeadSearch")
 STATIC_DIR = config.ROOT / "app" / "static"
@@ -182,7 +182,7 @@ def _dest_row(l: dict) -> list:
         l.get("lead_date", ""),                                 # Date of lead
         person.get("company") or ex.get("company", ""),         # Company
         person.get("role") or ex.get("role_guess", ""),         # Designation
-        "",                                                     # Owner (AE)
+        l.get("owner", ""),                                     # Owner (AE)
         qual,                                                   # Qualification Status
     ]
 
@@ -219,6 +219,11 @@ def sheets_push() -> JSONResponse:
              if l.get("status") in done and not l.get("pushed")]
     if not leads:
         return JSONResponse({"pushed": 0, "note": "No new refined leads to push."})
+    # Assign an AE (Owner) to any lead that doesn't have one yet.
+    for l in leads:
+        if not l.get("owner"):
+            l["owner"] = distribution.assign_owner(l)
+            db.update_lead(l["id"], owner=l["owner"])
     try:
         sheets.append_dest_rows(_DEST_HEADER, [_dest_row(l) for l in leads])
     except sheets.SheetsError as e:

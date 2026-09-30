@@ -42,6 +42,7 @@ _COLUMNS = {
     "error": "TEXT",
     "screening": "TEXT",
     "screened": "INTEGER DEFAULT 0",
+    "owner": "TEXT",
     "pushed": "INTEGER DEFAULT 0",
     "created_at": "REAL",
     "updated_at": "REAL",
@@ -60,6 +61,22 @@ def init_db() -> None:
                 simple = decl.replace("PRIMARY KEY AUTOINCREMENT", "") \
                              .replace("NOT NULL", "").strip()
                 conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {simple}")
+        # Small key/value table for round-robin counters etc.
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+
+
+def next_rr(name: str, n: int) -> int:
+    """Return the next round-robin index for `name` (0..n-1) and advance it."""
+    if n <= 0:
+        return 0
+    key = f"rr_{name}"
+    with _lock, _conn() as conn:
+        row = conn.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+        cur = int(row["v"]) if row and str(row["v"]).isdigit() else 0
+        conn.execute(
+            "INSERT INTO meta (k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v", (key, str(cur + 1)))
+        return cur % n
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:

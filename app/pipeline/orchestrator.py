@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 
 from .. import config, db
-from . import llm, screening
+from . import distribution, llm, screening
 from .classify import classify
 from .decision import decide
 from .fetch import acquire_content
@@ -74,11 +74,14 @@ def process_lead(lead_id: int) -> None:
         if provided.startswith("http") and "linkedin.com" in provided.lower():
             chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
             screen_summary = _screen_lead(lead_id, chosen)
+            owner = distribution.assign_owner({
+                "phone": lead.get("phone"), "message": lead.get("message"),
+                "visa": lead.get("visa"), "extracted": {}, "chosen": chosen})
             db.update_lead(
                 lead_id, status="accepted", stage="done", confidence=None,
                 candidates=[{"url": provided, "source_type": "linkedin (provided)",
                              "score": None, "signals": {}, "person": chosen.get("person", {})}],
-                chosen=chosen, screening=screen_summary, screened=1,
+                chosen=chosen, screening=screen_summary, screened=1, owner=owner,
                 reasoning="LinkedIn URL provided by the lead — no refinement needed.",
                 error=None,
             )
@@ -189,6 +192,11 @@ def process_lead(lead_id: int) -> None:
         # Step 9 — screen the chosen LinkedIn profile through the RAG console
         screen_summary = _screen_lead(lead_id, chosen) if chosen else None
 
+        # Step 10 — assign the AE (Owner) per the distribution rules
+        owner = distribution.assign_owner({
+            "phone": lead.get("phone"), "message": lead.get("message"),
+            "visa": lead.get("visa"), "extracted": extracted, "chosen": chosen or {}})
+
         db.update_lead(
             lead_id,
             candidates=candidates,
@@ -199,6 +207,7 @@ def process_lead(lead_id: int) -> None:
             chosen=chosen,
             screening=screen_summary,
             screened=1 if screen_summary else 0,
+            owner=owner,
             error=None,
         )
     except Exception as e:  # noqa: BLE001 — surface any failure on the lead itself

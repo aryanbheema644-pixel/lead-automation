@@ -223,7 +223,7 @@ async function openDrawer(id) {
 
   $("#drawerBody").innerHTML = `
     <h2>${esc(lead.name || "Lead #" + lead.id)}</h2>
-    <div class="sub">${badge(lead.status, lead.stage)}</div>
+    <div class="sub">${badge(lead.status, lead.stage)}${lead.owner ? ` · AE: <b>${esc(lead.owner)}</b>` : ""}</div>
     ${screeningHtml}
     <h3>Raw input</h3>
     <div class="kv">${kv("Company", lead.company)}${kv("Email", lead.email)}${kv("Phone", lead.phone)}${kv("LinkedIn", lead.linkedin)}${kv("Message", lead.message)}</div>

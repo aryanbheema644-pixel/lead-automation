@@ -75,6 +75,16 @@ REVIEW_THRESHOLD = _get_float("REVIEW_THRESHOLD", 0.45)
 # is ordering-only; the displayed score is unchanged. Wrong-person LinkedIn hits
 # (low score) are NOT boosted, so they can't win.
 LINKEDIN_BOOST = _get_float("LINKEDIN_BOOST", 0.15)
+
+
+def _get_list(name: str, default: str) -> list[str]:
+    return [x.strip() for x in _get(name, default).split(",") if x.strip()]
+
+
+# AE lead distribution (Owner column). "Tina" = Agustina.
+AE_ROUND_ROBIN = _get_list("AE_ROUND_ROBIN", "Vansh,Rahul,Agustina,Rocio")
+AE_LATAM = _get_list("AE_LATAM", "Agustina,Rocio")   # LATAM round-robin (Tina/Rocio)
+AE_PILOT = _get("AE_PILOT", "Rahul")                 # pilots (profession) -> Rahul
 MAX_RESULTS_PER_LEAD = _get_int("MAX_RESULTS_PER_LEAD", 10)
 MAX_CANDIDATES_MATCHED = _get_int("MAX_CANDIDATES_MATCHED", 5)
 # How many LinkedIn profiles to match (on top of MAX_CANDIDATES_MATCHED, so
