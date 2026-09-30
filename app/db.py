@@ -24,6 +24,7 @@ _COLUMNS = {
     "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
     "name": "TEXT",
     "company": "TEXT",
+    "channel": "TEXT",
     "email": "TEXT",
     "phone": "TEXT",
     "linkedin": "TEXT",
@@ -119,17 +120,48 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def insert_lead(name: str, company: str, email: str, phone: str, message: str,
                 linkedin: str = "", li_optout: int = 0,
-                visa: str = "", lead_date: str = "") -> int:
+                visa: str = "", lead_date: str = "", channel: str = "") -> int:
     now = time.time()
     with _lock, _conn() as conn:
         cur = conn.execute(
-            """INSERT INTO leads (name, company, email, phone, linkedin, li_optout,
-                                  visa, lead_date, message, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
-            (name, company, email, phone, linkedin, li_optout, visa, lead_date,
-             message, now, now),
+            """INSERT INTO leads (name, company, channel, email, phone, linkedin,
+                                  li_optout, visa, lead_date, message, status,
+                                  created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+            (name, company, channel, email, phone, linkedin, li_optout, visa,
+             lead_date, message, now, now),
         )
         return int(cur.lastrowid)
+
+
+def analytics() -> dict:
+    """Aggregate counts for the dashboard charts: by channel, status, fit tier,
+    and by day (last 14). Cheap — the leads table only holds processed leads."""
+    import datetime as _dt
+    channels: dict = {}
+    statuses: dict = {}
+    tiers: dict = {}
+    by_day: dict = {}
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT channel, status, screening, created_at FROM leads").fetchall()
+    for r in rows:
+        ch = r["channel"] or "Upload"
+        channels[ch] = channels.get(ch, 0) + 1
+        st = r["status"] or "?"
+        statuses[st] = statuses.get(st, 0) + 1
+        if r["screening"]:
+            try:
+                tier = (json.loads(r["screening"]) or {}).get("tier")
+            except (json.JSONDecodeError, TypeError):
+                tier = None
+            if tier:
+                tiers[tier] = tiers.get(tier, 0) + 1
+        if r["created_at"]:
+            d = _dt.datetime.utcfromtimestamp(r["created_at"]).strftime("%Y-%m-%d")
+            by_day[d] = by_day.get(d, 0) + 1
+    return {"channels": channels, "statuses": statuses, "tiers": tiers,
+            "by_day": sorted(by_day.items())[-14:]}
 
 
 def update_lead(lead_id: int, **fields: Any) -> None:

@@ -110,14 +110,32 @@ def classify_linkedin(li_cell: str, message: str) -> dict:
     return {"linkedin_url": "", "other_url": "", "optout": False}
 
 
-def _insert_row(val) -> bool:
+def _channel_from_tab(title: str) -> str:
+    """Normalize a source tab title into a channel label for analytics."""
+    t = (title or "").lower()
+    if "website" in t:
+        return "Website"
+    if "meta" in t:
+        return "Meta"
+    if "chatbot" in t or "whatsapp" in t or t.strip().startswith("wa "):
+        return "WhatsApp"
+    if "google" in t:
+        return "Google Ads"
+    if "referral" in t:
+        return "Referral"
+    if "linkedin" in t:
+        return "LinkedIn"
+    return title or "Other"
+
+
+def _insert_row(val, channel: str = "") -> bool:
     if not any(val(k) for k in ("name", "company", "email", "phone", "message")):
         return False
     info = classify_linkedin(val("linkedin"), val("message"))
     lead_id = db.insert_lead(
         val("name"), val("company"), val("email"), val("phone"), val("message"),
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
-        visa=val("visa"), lead_date=val("date"),
+        visa=val("visa"), lead_date=val("date"), channel=channel,
     )
     # Routing:
     #  - provided LinkedIn -> stays 'queued'; the worker skips discovery but still
@@ -161,7 +179,7 @@ def _dedup_key(name: str, email: str, phone: str) -> str:
 
 
 def _ingest_rows(rows: list[list[str]], dedup: bool = False,
-                 limit: int | None = None) -> tuple[int, dict]:
+                 limit: int | None = None, channel: str = "") -> tuple[int, dict]:
     """Map columns via the LLM, then insert each data row as a queued lead.
     With dedup=True, skip rows already ingested (by _dedup_key) and record new
     ones as seen. Shared by CSV upload, Google Sheet pull, and the scheduler."""
@@ -182,7 +200,7 @@ def _ingest_rows(rows: list[list[str]], dedup: bool = False,
         key = _dedup_key(val("name"), val("email"), val("phone"))
         if dedup and key and key in seen:
             continue
-        if _insert_row(val):
+        if _insert_row(val, channel=channel):
             count += 1
             if key:
                 seen.add(key)
@@ -226,7 +244,7 @@ async def upload(file: UploadFile) -> JSONResponse:
     rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
     if not rows:
         raise HTTPException(400, "The CSV is empty.")
-    count, mapping = _ingest_rows(rows)
+    count, mapping = _ingest_rows(rows, channel="Upload")
     mapped = {k: mapping.get(k) for k in
               ("name", "company", "email", "phone", "linkedin", "message")}
     return JSONResponse({"inserted": count, "mapped_columns": mapped,
@@ -269,7 +287,8 @@ def _pull_new(limit: int | None = None) -> dict:
     tabs = sheets.read_source_tabs()
     total, per_tab, remaining = 0, {}, limit
     for title, rows in tabs:
-        count, _ = _ingest_rows(rows, dedup=True, limit=remaining)
+        count, _ = _ingest_rows(rows, dedup=True, limit=remaining,
+                                channel=_channel_from_tab(title))
         per_tab[title] = count
         total += count
         if remaining is not None:
@@ -369,6 +388,11 @@ def status() -> JSONResponse:
             "scheduler": config.scheduler_status(),
         }
     )
+
+
+@app.get("/api/analytics")
+def analytics() -> JSONResponse:
+    return JSONResponse(db.analytics())
 
 
 @app.get("/api/leads")

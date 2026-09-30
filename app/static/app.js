@@ -158,7 +158,7 @@ async function loadLeads() {
     <tr>
       <td class="sub">${l.id}</td>
       <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
-      <td>${esc(l.company || "—")}</td>
+      <td>${l.channel ? `<span class="chip">${esc(l.channel)}</span>` : '<span class="sub">—</span>'}</td>
       <td>${badge(l.status, l.stage)}</td>
       <td>${topMatch(l)}</td>
       <td>${tierChip(l.screening)}</td>
@@ -192,8 +192,14 @@ async function loadReview() {
 async function loadStats() {
   const st = await (await fetch("/api/status")).json();
   const { stats, running, providers } = st;
-  const cells = [["total","Total"],["queued","Queued"],["processing","Processing"],["accepted","Accepted"],["review","Review"],["rejected","Rejected"]];
-  $("#stats").innerHTML = cells.map(([k, lbl]) => `<div class="stat ${k}"><div class="num">${stats[k] || 0}</div><div class="lbl">${lbl}</div></div>`).join("");
+  const tiles = [
+    ["total", "Total", stats.total || 0, `${stats.queued || 0} queued · ${stats.processing || 0} processing`],
+    ["accepted", "Accepted", stats.accepted || 0, ""],
+    ["review", "Review", stats.review || 0, ""],
+    ["rejected", "Rejected", stats.rejected || 0, ""],
+  ];
+  $("#stats").innerHTML = tiles.map(([c, lbl, n, sub]) =>
+    `<div class="tile ${c}"><div class="num">${n}</div><div class="lbl">${lbl}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`).join("");
   $("#reviewCount").textContent = stats.review || 0;
   const p = providers, prov = [["OpenRouter", p.openrouter, p.model], ["Tavily", p.tavily], ["Firecrawl", p.firecrawl], ["Apify", p.apify], ["Screening", p.screening], ["Sheets", p.sheets]];
   $("#providers").innerHTML = prov.map(([n, on, x]) => `<span class="pill ${on ? "on" : ""}" title="${x || ""}"><span class="dot"></span>${n}</span>`).join("");
@@ -265,10 +271,51 @@ function closeDrawer() { $("#drawer").classList.remove("open"); }
 $("#drawerClose").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
 
+// ── Analytics charts (Chart.js, monochrome) ──────────────────────────────────
+const GRAYS = ["#111111", "#454545", "#767676", "#a3a3a3", "#c9c9c9", "#e2e2e2"];
+const _charts = {};
+function _chartReady() { return typeof Chart !== "undefined"; }
+function _draw(id, cfg) {
+  if (!_chartReady()) return;
+  const el = document.getElementById(id); if (!el) return;
+  if (_charts[id]) { _charts[id].data = cfg.data; _charts[id].update(); return; }
+  _charts[id] = new Chart(el, cfg);
+}
+const _baseOpts = (extra = {}) => ({
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: { x: { grid: { display: false }, ticks: { color: "#6f6f6f", font: { size: 11 } } },
+            y: { beginAtZero: true, grid: { color: "#eee" }, ticks: { color: "#6f6f6f", precision: 0, font: { size: 11 } } } },
+  ...extra,
+});
+function _bar(labels, data) {
+  return { type: "bar", data: { labels, datasets: [{ data, backgroundColor: labels.map((_, i) => GRAYS[i % GRAYS.length]), borderRadius: 2, maxBarThickness: 46 }] }, options: _baseOpts() };
+}
+function _donut(labels, data) {
+  return { type: "doughnut", data: { labels, datasets: [{ data, backgroundColor: [GRAYS[0], GRAYS[2], GRAYS[4]], borderColor: "#fff", borderWidth: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "bottom", labels: { color: "#6f6f6f", boxWidth: 10, font: { size: 11 } } } } } };
+}
+function _line(labels, data) {
+  return { type: "line", data: { labels, datasets: [{ data, borderColor: "#111", backgroundColor: "rgba(17,17,17,.06)", fill: true, tension: .3, pointRadius: 2, pointBackgroundColor: "#111" }] }, options: _baseOpts() };
+}
+async function loadAnalytics() {
+  if (!_chartReady()) { setTimeout(loadAnalytics, 400); return; }
+  let a;
+  try { a = await (await fetch("/api/analytics")).json(); } catch { return; }
+  const ch = a.channels || {};
+  _draw("chChannels", _bar(Object.keys(ch).length ? Object.keys(ch) : ["—"], Object.values(ch).length ? Object.values(ch) : [0]));
+  const oc = a.statuses || {};
+  _draw("chOutcomes", _donut(["Accepted", "Review", "Rejected"], [oc.accepted || 0, oc.review || 0, oc.rejected || 0]));
+  const ti = a.tiers || {};
+  _draw("chTiers", _bar(Object.keys(ti).length ? Object.keys(ti) : ["—"], Object.values(ti).length ? Object.values(ti) : [0]));
+  const days = a.by_day || [];
+  _draw("chTime", _line(days.map(d => d[0].slice(5)), days.map(d => d[1])));
+}
+
 // ── Polling ─────────────────────────────────────────────────────────────────
 function startPolling() { if (!pollTimer) pollTimer = setInterval(refresh, 2000); }
 function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
-function refresh() { loadStats(); loadLeads(); }
+function refresh() { loadStats(); loadLeads(); loadAnalytics(); }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 refresh();
