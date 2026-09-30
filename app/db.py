@@ -141,15 +141,18 @@ def analytics() -> dict:
     channels: dict = {}
     statuses: dict = {}
     tiers: dict = {}
+    owners: dict = {}
     by_day: dict = {}
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT channel, status, screening, created_at FROM leads").fetchall()
+            "SELECT channel, status, screening, owner, created_at FROM leads").fetchall()
     for r in rows:
         ch = r["channel"] or "Upload"
         channels[ch] = channels.get(ch, 0) + 1
         st = r["status"] or "?"
         statuses[st] = statuses.get(st, 0) + 1
+        if r["owner"]:
+            owners[r["owner"]] = owners.get(r["owner"], 0) + 1
         if r["screening"]:
             try:
                 tier = (json.loads(r["screening"]) or {}).get("tier")
@@ -161,7 +164,7 @@ def analytics() -> dict:
             d = _dt.datetime.utcfromtimestamp(r["created_at"]).strftime("%Y-%m-%d")
             by_day[d] = by_day.get(d, 0) + 1
     return {"channels": channels, "statuses": statuses, "tiers": tiers,
-            "by_day": sorted(by_day.items())[-14:]}
+            "owners": owners, "by_day": sorted(by_day.items())[-14:]}
 
 
 def update_lead(lead_id: int, **fields: Any) -> None:
