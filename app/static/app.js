@@ -59,6 +59,14 @@ $("#pushBtn").addEventListener("click", async () => {
     msg.className = "msg ok"; msg.textContent = data.pushed ? `Pushed ${data.pushed} leads to the destination sheet.` : (data.note || "Nothing new to push.");
   } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
 });
+$("#baselineBtn").addEventListener("click", async () => {
+  if (!confirm("Mark ALL current rows in the source sheet as already-seen? They will be SKIPPED (not processed) — only new leads added later will be processed.")) return;
+  const msg = $("#uploadMsg"); msg.className = "msg"; msg.textContent = "Baselining the source backlog…";
+  try {
+    const data = await readResponse(await fetch("/api/sheets/baseline", { method: "POST" }));
+    msg.className = "msg ok"; msg.textContent = `Baselined ${data.baselined} rows as seen. Only new leads will be processed from now on.`;
+  } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
+});
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 $("#tabs").addEventListener("click", (e) => {
@@ -191,6 +199,18 @@ async function loadStats() {
   $("#providers").innerHTML = prov.map(([n, on, x]) => `<span class="pill ${on ? "on" : ""}" title="${x || ""}"><span class="dot"></span>${n}</span>`).join("");
   $("#pullBtn").hidden = !(p.sheets && p.source_sheet);
   $("#pushBtn").hidden = !(p.sheets && p.dest_sheet);
+  $("#baselineBtn").hidden = !(p.sheets && p.source_sheet);
+  const sc = st.scheduler || {};
+  const auto = document.querySelector("#providers");
+  if (sc.enabled) {
+    // show an Auto pill if the scheduler is on
+    if (!document.getElementById("autoPill")) {
+      const s = document.createElement("span");
+      s.id = "autoPill"; s.className = "pill on";
+      s.innerHTML = `<span class="dot"></span>AUTO ${Math.round((sc.interval||900)/60)}m`;
+      auto.appendChild(s);
+    }
+  }
   updatePipeline(st);
   if (!running && (stats.queued === 0 && stats.processing === 0)) stopPolling();
   return running;

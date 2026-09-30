@@ -47,3 +47,10 @@ services:
         value: "true"
       - key: SCREENING_API_KEY
         sync: false
+      # --- Auto-ingest scheduler (off by default) ---
+      - key: SCHEDULER_ENABLED
+        value: "false"
+      - key: SCHEDULER_INTERVAL_SECONDS
+        value: "900"
+      - key: SCHEDULER_MAX_PER_CYCLE
+        value: "50"

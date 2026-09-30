@@ -63,6 +63,33 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {simple}")
         # Small key/value table for round-robin counters etc.
         conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+        # Dedup store: keys of source rows we've already ingested (or baselined).
+        conn.execute("CREATE TABLE IF NOT EXISTS seen_leads (k TEXT PRIMARY KEY)")
+
+
+def seen_keys() -> set:
+    """All dedup keys we've already ingested — from seen_leads plus existing
+    leads' emails (so we never re-ingest the same person)."""
+    with _conn() as conn:
+        keys = {r["k"] for r in conn.execute("SELECT k FROM seen_leads")}
+        for r in conn.execute("SELECT email FROM leads WHERE email != ''"):
+            if r["email"]:
+                keys.add(r["email"].strip().lower())
+    return keys
+
+
+def mark_seen(keys: list[str]) -> None:
+    keys = [k for k in keys if k]
+    if not keys:
+        return
+    with _lock, _conn() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO seen_leads (k) VALUES (?)", [(k,) for k in keys])
+
+
+def count_seen() -> int:
+    with _conn() as conn:
+        return int(conn.execute("SELECT COUNT(*) c FROM seen_leads").fetchone()["c"])
 
 
 def next_rr(name: str, n: int) -> int:

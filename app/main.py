@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+import threading
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, UploadFile
@@ -20,6 +21,39 @@ STATIC_DIR = config.ROOT / "app" / "static"
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    _start_scheduler()
+
+
+# ── Auto-ingest scheduler ─────────────────────────────────────────────────
+_scheduler_thread = None
+_scheduler_stop = threading.Event()
+
+
+def _scheduler_cycle() -> None:
+    """One automation tick: pull new leads, run the pipeline, push finished ones."""
+    if config.GOOGLE_SOURCE_SHEET_ID:
+        try:
+            _pull_new(limit=config.SCHEDULER_MAX_PER_CYCLE)
+        except Exception:  # noqa: BLE001 — never let the loop die
+            pass
+    orchestrator.start_worker()
+    if config.GOOGLE_DEST_SHEET_ID:
+        try:
+            _push_unpushed()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _scheduler_loop() -> None:
+    while not _scheduler_stop.wait(config.SCHEDULER_INTERVAL_SECONDS):
+        _scheduler_cycle()
+
+
+def _start_scheduler() -> None:
+    global _scheduler_thread
+    if config.SCHEDULER_ENABLED and _scheduler_thread is None:
+        _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
+        _scheduler_thread.start()
 
 
 # A LinkedIn URL, tolerant of distortions: optional scheme, any/garbled subdomain
@@ -117,9 +151,20 @@ def _indices(mapping: dict, key: str) -> list[int]:
     return out
 
 
-def _ingest_rows(rows: list[list[str]]) -> tuple[int, dict]:
+def _dedup_key(name: str, email: str, phone: str) -> str:
+    """Stable per-lead key for dedup: email if present, else name|phone."""
+    email = (email or "").strip().lower()
+    if email:
+        return email
+    np = f"{(name or '').strip().lower()}|{re.sub(r'[^0-9]', '', phone or '')}"
+    return np if np != "|" else ""
+
+
+def _ingest_rows(rows: list[list[str]], dedup: bool = False,
+                 limit: int | None = None) -> tuple[int, dict]:
     """Map columns via the LLM, then insert each data row as a queued lead.
-    Shared by CSV upload and Google Sheet pull. Returns (inserted, mapping)."""
+    With dedup=True, skip rows already ingested (by _dedup_key) and record new
+    ones as seen. Shared by CSV upload, Google Sheet pull, and the scheduler."""
     rows = [r for r in rows if any((c or "").strip() for c in r)]
     if not rows:
         return 0, {}
@@ -128,14 +173,46 @@ def _ingest_rows(rows: list[list[str]]) -> tuple[int, dict]:
     except llm.LLMError as e:
         raise HTTPException(400, f"Could not map columns (LLM): {e}")
     data_rows = rows[1:] if mapping.get("has_header") else rows
-    count = 0
+    seen = db.seen_keys() if dedup else set()
+    count, new_keys = 0, []
     for row in data_rows:
         def val(key: str, _row=row) -> str:
             cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
             return " ".join(c for c in cells if c).strip()
+        key = _dedup_key(val("name"), val("email"), val("phone"))
+        if dedup and key and key in seen:
+            continue
         if _insert_row(val):
             count += 1
+            if key:
+                seen.add(key)
+                new_keys.append(key)
+            if limit and count >= limit:
+                break
+    if new_keys:
+        db.mark_seen(new_keys)
     return count, mapping
+
+
+def _row_keys(rows: list[list[str]]) -> list[str]:
+    """Dedup keys for all data rows in a tab (used to baseline the backlog)."""
+    rows = [r for r in rows if any((c or "").strip() for c in r)]
+    if not rows:
+        return []
+    try:
+        mapping = llm.map_columns(rows[:5])
+    except llm.LLMError:
+        return []
+    data_rows = rows[1:] if mapping.get("has_header") else rows
+    keys = []
+    for row in data_rows:
+        def val(key: str, _row=row) -> str:
+            cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
+            return " ".join(c for c in cells if c).strip()
+        k = _dedup_key(val("name"), val("email"), val("phone"))
+        if k:
+            keys.append(k)
+    return keys
 
 
 @app.post("/api/upload")
@@ -187,24 +264,68 @@ def _dest_row(l: dict) -> list:
     ]
 
 
+def _pull_new(limit: int | None = None) -> dict:
+    """Read the source tabs and ingest only NEW (deduped) rows. Returns per-tab counts."""
+    tabs = sheets.read_source_tabs()
+    total, per_tab, remaining = 0, {}, limit
+    for title, rows in tabs:
+        count, _ = _ingest_rows(rows, dedup=True, limit=remaining)
+        per_tab[title] = count
+        total += count
+        if remaining is not None:
+            remaining -= count
+            if remaining <= 0:
+                break
+    return {"inserted": total, "tabs": per_tab}
+
+
 @app.post("/api/sheets/pull")
 def sheets_pull() -> JSONResponse:
-    """Read new leads from the source Google Sheet into the queue."""
+    """Read NEW leads (deduped) from the source Google Sheet into the queue."""
     if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
         raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
     if not config.GOOGLE_SOURCE_SHEET_ID:
         raise HTTPException(400, "No source sheet configured (GOOGLE_SOURCE_SHEET_ID).")
     try:
+        return JSONResponse(_pull_new())
+    except sheets.SheetsError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/sheets/baseline")
+def sheets_baseline() -> JSONResponse:
+    """Mark ALL current source rows as already-seen WITHOUT processing them, so
+    the existing backlog is skipped and only new leads get processed going forward."""
+    if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
+        raise HTTPException(400, "Google service account not configured.")
+    if not config.GOOGLE_SOURCE_SHEET_ID:
+        raise HTTPException(400, "No source sheet configured.")
+    try:
         tabs = sheets.read_source_tabs()
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
-    total = 0
-    per_tab = {}
-    for title, rows in tabs:
-        count, _ = _ingest_rows(rows)  # map columns per-tab (formats differ per source)
-        per_tab[title] = count
-        total += count
-    return JSONResponse({"inserted": total, "tabs": per_tab})
+    keys = []
+    for _title, rows in tabs:
+        keys.extend(_row_keys(rows))
+    db.mark_seen(keys)
+    return JSONResponse({"baselined": len(keys), "total_seen": db.count_seen()})
+
+
+def _push_unpushed() -> int:
+    """Assign owners and write all processed, not-yet-pushed leads to the dest sheet."""
+    done = {"accepted", "review", "rejected"}
+    leads = [l for l in db.list_leads()
+             if l.get("status") in done and not l.get("pushed")]
+    if not leads:
+        return 0
+    for l in leads:
+        if not l.get("owner"):
+            l["owner"] = distribution.assign_owner(l)
+            db.update_lead(l["id"], owner=l["owner"])
+    sheets.append_dest_rows(_DEST_HEADER, [_dest_row(l) for l in leads])
+    for l in leads:
+        db.update_lead(l["id"], pushed=1)
+    return len(leads)
 
 
 @app.post("/api/sheets/push")
@@ -214,23 +335,11 @@ def sheets_push() -> JSONResponse:
         raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
     if not config.GOOGLE_DEST_SHEET_ID:
         raise HTTPException(400, "No destination sheet configured (GOOGLE_DEST_SHEET_ID).")
-    done = {"accepted", "review", "rejected"}
-    leads = [l for l in db.list_leads()
-             if l.get("status") in done and not l.get("pushed")]
-    if not leads:
-        return JSONResponse({"pushed": 0, "note": "No new refined leads to push."})
-    # Assign an AE (Owner) to any lead that doesn't have one yet.
-    for l in leads:
-        if not l.get("owner"):
-            l["owner"] = distribution.assign_owner(l)
-            db.update_lead(l["id"], owner=l["owner"])
     try:
-        sheets.append_dest_rows(_DEST_HEADER, [_dest_row(l) for l in leads])
+        n = _push_unpushed()
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
-    for l in leads:
-        db.update_lead(l["id"], pushed=1)
-    return JSONResponse({"pushed": len(leads)})
+    return JSONResponse({"pushed": n} if n else {"pushed": 0, "note": "No new refined leads to push."})
 
 
 @app.post("/api/run")
@@ -257,6 +366,7 @@ def status() -> JSONResponse:
             "running": orchestrator.is_running(),
             "current": current,
             "providers": config.provider_status(),
+            "scheduler": config.scheduler_status(),
         }
     )
 
