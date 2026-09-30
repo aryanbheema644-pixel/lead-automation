@@ -83,6 +83,7 @@ def _insert_row(val) -> bool:
     lead_id = db.insert_lead(
         val("name"), val("company"), val("email"), val("phone"), val("message"),
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
+        visa=val("visa"), lead_date=val("date"),
     )
     # Routing:
     #  - provided LinkedIn -> stays 'queued'; the worker skips discovery but still
@@ -155,12 +156,11 @@ async def upload(file: UploadFile) -> JSONResponse:
                          "header_detected": bool(mapping.get("has_header"))})
 
 
-# Destination-sheet columns for refined + screened leads.
-_DEST_HEADER = ["Name", "Email", "Phone", "Company", "Location", "Role",
-                "LinkedIn / Match URL", "Source", "Status",
-                "Fit Tier", "Screen Confidence", "Best Path", "Backup Path",
-                "Key Strength", "Red Flag", "Flip Trigger", "Matched Cases",
-                "Screening Notes", "Match Reasoning", "Processed At (UTC)"]
+# Destination-sheet columns — matches the "Master Leads Sheet Cleaned" format
+# (trailing spaces kept to mirror the sheet's own headers, used only if empty).
+_DEST_HEADER = ["Name ", "Email", "Number", "Linkedin Profile URL",
+                "Visa intrested in", "Message", "Date of lead", "Company",
+                "Designation ", "Owner (AE)", "Qualification Status"]
 
 
 def _dest_row(l: dict) -> list:
@@ -168,27 +168,22 @@ def _dest_row(l: dict) -> list:
     person = chosen.get("person") or {}
     ex = l.get("extracted") or {}
     s = l.get("screening") or {}
+    tier = s.get("tier", "")
+    qual = tier or l.get("status", "")
+    if tier and s.get("best_path"):
+        qual = f"{tier} · {s.get('best_path')}"
     return [
-        person.get("name") or l.get("name", ""),
-        l.get("email", ""),
-        l.get("phone", ""),
-        person.get("company") or ex.get("company", ""),
-        person.get("location") or ex.get("location", ""),
-        person.get("role") or ex.get("role_guess", ""),
-        chosen.get("url", ""),
-        chosen.get("source_type", ""),
-        l.get("status", ""),
-        s.get("tier", ""),
-        s.get("confidence", ""),
-        s.get("best_path", ""),
-        s.get("backup_path", ""),
-        s.get("key_strength", ""),
-        s.get("red_flag", ""),
-        s.get("flip_trigger", ""),
-        s.get("matched_cases", ""),
-        (s.get("answer") or s.get("note") or s.get("error") or "").replace("\n", " "),
-        (l.get("reasoning", "") or "").replace("\n", " "),
-        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        person.get("name") or l.get("name", ""),                # Name
+        l.get("email", ""),                                     # Email
+        l.get("phone", ""),                                     # Number
+        chosen.get("url", ""),                                  # Linkedin Profile URL
+        l.get("visa", ""),                                      # Visa intrested in
+        l.get("message", ""),                                   # Message
+        l.get("lead_date", ""),                                 # Date of lead
+        person.get("company") or ex.get("company", ""),         # Company
+        person.get("role") or ex.get("role_guess", ""),         # Designation
+        "",                                                     # Owner (AE)
+        qual,                                                   # Qualification Status
     ]
 
 

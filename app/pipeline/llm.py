@@ -94,6 +94,9 @@ MAP_SYS = (
     "- linkedin: a LinkedIn URL or handle.\n"
     "- message: the main free-text note / enquiry / bio / 'about' / comment — "
     "usually the longest sentence-like cell.\n"
+    "- visa: the visa type the lead is interested in (e.g. 'O1 Visa', 'EB-2 NIW', "
+    "'EB-1'), if such a column exists.\n"
+    "- date: the date the lead came in / was created, if such a column exists.\n"
     "RULES:\n"
     "1. Set has_header true only if row 0 holds column LABELS (no real data "
     "values); otherwise false (row 0 is already data).\n"
@@ -116,7 +119,8 @@ MAP_SYS = (
 )
 MAP_SCHEMA = (
     '{"has_header": bool, "name": int|[int,...]|null, "company": int|null, '
-    '"email": int|null, "phone": int|null, "linkedin": int|null, "message": int|null}'
+    '"email": int|null, "phone": int|null, "linkedin": int|null, "message": int|null, '
+    '"visa": int|null, "date": int|null}'
 )
 
 
