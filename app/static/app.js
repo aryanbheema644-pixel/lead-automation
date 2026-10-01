@@ -1,6 +1,9 @@
 const $ = (s) => document.querySelector(s);
 let pollTimer = null;
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+// Only touch the DOM when the markup actually changed — the dashboard polls every
+// 2s while running, and blind re-renders make the page flicker and jump.
+function setHTML(el, html) { if (!el || el._html === html) return false; el._html = html; el.innerHTML = html; return true; }
 function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 async function readResponse(r) {
   const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = { detail: t.slice(0, 300) || `HTTP ${r.status}` }; }
@@ -61,11 +64,17 @@ const SOURCE_LABELS = { linkedin: "LinkedIn profile", "linkedin (provided)": "Li
 function prettyUrl(u) { u = String(u || "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, ""); return u.length > 40 ? u.slice(0, 40) + "…" : u; }
 function topMatch(lead) { const c = (lead.candidates || [])[0], ch = lead.chosen; const src = ch && ch.url ? ch : c; if (!src) return '<span class="sub">—</span>'; const label = SOURCE_LABELS[src.source_type] || src.source_type || "—"; return `<div class="tm-label">${esc(label)}</div><a class="tm-url" href="${src.url}" target="_blank" rel="noopener">${esc(prettyUrl(src.url))}</a>`; }
 function tierChip(s) { if (!s || !s.tier) return '<span class="sub">—</span>'; const t = esc(s.tier); return `<span class="tier ${t}">${t}</span>`; }
-function rowActions(l) { let b = ""; if (l.status === "review") b += `<button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button>`; else if (l.status === "accepted") b += `<button class="mini no" data-reject="${l.id}">Reject</button>`; b += `<button class="link-btn" data-open="${l.id}">Details ▸</button>`; return `<div class="row-actions">${b}</div>`; }
+function rowActions(l) { let b = ""; if (l.status === "review") b += `<button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button>`; else if (l.status === "accepted") b += `<button class="mini no" data-reject="${l.id}">Reject</button>`; b += `<button class="link-btn" data-open="${l.id}">Details ▸</button><button class="icon-del" data-delete="${l.id}" title="Delete lead" aria-label="Delete lead"><svg width="15" height="15" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`; return `<div class="row-actions">${b}</div>`; }
 function wireRowButtons(root) {
   root.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDrawer(b.dataset.open); }));
   root.querySelectorAll("[data-accept]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); acceptTop(b.dataset.accept); }));
   root.querySelectorAll("[data-reject]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); rejectLead(b.dataset.reject); }));
+  root.querySelectorAll("[data-delete]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); deleteLead(b.dataset.delete); }));
+}
+async function deleteLead(id) {
+  if (!confirm(`Delete lead #${id}? This can't be undone.`)) return false;
+  try { await readResponse(await fetch(`/api/leads/${id}`, { method: "DELETE" })); } catch (e) { alert(e.message); return false; }
+  refresh(); return true;
 }
 async function acceptTop(id) { await fetch(`/api/leads/${id}/choose`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ candidate_index: 0 }) }); refresh(); }
 async function rejectLead(id) { await fetch(`/api/leads/${id}/reject`, { method: "POST" }); refresh(); }
@@ -74,8 +83,8 @@ async function rejectLead(id) { await fetch(`/api/leads/${id}/reject`, { method:
 async function loadLeads() {
   const { leads } = await (await fetch("/api/leads?status=all")).json();
   const tb = $("#leadRows");
-  if (!leads.length) { tb.innerHTML = `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`; return; }
-  tb.innerHTML = leads.map((l) => `<tr>
+  if (!leads.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`); return; }
+  if (setHTML(tb, leads.map((l) => `<tr>
     <td class="sub">${l.id}</td>
     <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
     <td>${l.channel ? `<span class="chip">${esc(l.channel)}</span>` : '<span class="sub">—</span>'}</td>
@@ -83,21 +92,19 @@ async function loadLeads() {
     <td>${topMatch(l)}</td>
     <td>${tierChip(l.screening)}</td>
     <td>${l.owner ? `<span class="ae">${esc(l.owner)}</span>` : '<span class="sub">—</span>'}</td>
-    <td>${rowActions(l)}</td></tr>`).join("");
-  wireRowButtons(tb);
+    <td>${rowActions(l)}</td></tr>`).join(""))) wireRowButtons(tb);
 }
 async function loadReview() {
   const { leads } = await (await fetch("/api/leads?status=review")).json();
   $("#reviewCount").textContent = leads.length;
   const w = $("#reviewCards");
-  if (!leads.length) { w.innerHTML = `<div class="review-empty">Nothing needs review — you're all caught up. 🎉</div>`; return; }
-  w.innerHTML = leads.map((l) => { const ch = l.chosen || (l.candidates || [])[0] || {}; const label = SOURCE_LABELS[ch.source_type] || ch.source_type || "—"; return `<div class="review-card">
+  if (!leads.length) { setHTML(w, `<div class="review-empty">Nothing needs review — you're all caught up. 🎉</div>`); return; }
+  if (setHTML(w, leads.map((l) => { const ch = l.chosen || (l.candidates || [])[0] || {}; const label = SOURCE_LABELS[ch.source_type] || ch.source_type || "—"; return `<div class="review-card">
     <div class="rc-row"><h4>${esc(l.name || "Lead #" + l.id)}</h4>${tierChip(l.screening)}</div>
     <div class="rc-meta">${esc(l.company || l.email || "")}${l.owner ? " · AE: " + esc(l.owner) : ""}</div>
     <div><div class="tm-label">${esc(label)}</div>${ch.url ? `<a class="rc-url" href="${ch.url}" target="_blank" rel="noopener">${esc(prettyUrl(ch.url))}</a>` : ""}</div>
     <div class="cand-reason">${esc((l.reasoning || "").slice(0, 180))}</div>
-    <div class="rc-actions"><button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button><button class="link-btn" data-open="${l.id}">Details ▸</button></div></div>`; }).join("");
-  wireRowButtons(w);
+    <div class="rc-actions"><button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button><button class="link-btn" data-open="${l.id}">Details ▸</button></div></div>`; }).join(""))) wireRowButtons(w);
 }
 
 const _IC = 'width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
@@ -114,23 +121,26 @@ function sparkline(vals) {
   const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
   return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path d="${d} L ${w} ${h} L 0 ${h} Z" fill="var(--muted)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--muted)" stroke-width="1.6"/></svg>`;
 }
+// Filled by loadAnalytics, rendered inside the tiles (so a tile re-render never
+// leaves an empty slot that pops in later and shifts the layout).
+let _spark = sparkline([1, 1]), _trend = { text: "", cls: "trend" };
 async function loadStats() {
   const st = await (await fetch("/api/status")).json();
   const { stats, running, providers } = st;
   const tot = stats.total || 0, pct = (n) => (tot ? ((n / tot) * 100).toFixed(1) + "%" : "0%");
   const tiles = [
-    { c: "total", ic: ICONS.people, title: "Total Leads", badge: `<span id="trendTotal" class="trend"></span>`, num: tot, sub: `${stats.queued || 0} queued · ${stats.processing || 0} processing` },
+    { c: "total", ic: ICONS.people, title: "Total Leads", badge: `<span id="trendTotal" class="${_trend.cls}">${_trend.text}</span>`, num: tot, sub: `${stats.queued || 0} queued · ${stats.processing || 0} processing` },
     { c: "accepted", ic: ICONS.check, title: "Accepted", badge: `<span class="trend up">${pct(stats.accepted || 0)}</span>`, num: stats.accepted || 0, sub: "of total" },
     { c: "review", ic: ICONS.clock, title: "In Review", badge: `<span class="trend">${pct(stats.review || 0)}</span>`, num: stats.review || 0, sub: "of total" },
     { c: "rejected", ic: ICONS.x, title: "Rejected", badge: `<span class="trend down">${pct(stats.rejected || 0)}</span>`, num: stats.rejected || 0, sub: "of total" },
   ];
-  $("#stats").innerHTML = tiles.map((t) => `<div class="panel tile ${t.c}"><div class="ic">${t.ic}</div><div class="body">
+  setHTML($("#stats"), tiles.map((t) => `<div class="panel tile ${t.c}"><div class="ic">${t.ic}</div><div class="body">
     <div class="t-row"><span class="t-title">${t.title}</span>${t.badge}</div>
     <div class="t-num">${t.num}</div>
-    <div class="t-row2"><span class="t-sub">${t.sub}</span><span class="spark-slot"></span></div></div></div>`).join("");
-  const prov = [["OpenRouter", providers.openrouter], ["Tavily", providers.tavily], ["Firecrawl", providers.firecrawl], ["Apify", providers.apify], ["Screening", providers.screening], ["Sheets", providers.sheets]];
+    <div class="t-row2"><span class="t-sub">${t.sub}</span><span class="spark-slot">${_spark}</span></div></div></div>`).join(""));
+  const prov =[["OpenRouter", providers.openrouter], ["Tavily", providers.tavily], ["Firecrawl", providers.firecrawl], ["Apify", providers.apify], ["Screening", providers.screening], ["Sheets", providers.sheets]];
   if (st.scheduler && st.scheduler.enabled) prov.push([`Auto ${Math.round((st.scheduler.interval || 900) / 60)}m`, true]);
-  $("#providers").innerHTML = prov.map(([n, on]) => `<li class="${on ? "on" : ""}"><span class="dot"></span>${n}</li>`).join("");
+  setHTML($("#providers"), prov.map(([n, on]) => `<li class="${on ? "on" : ""}"><span class="dot"></span>${n}</li>`).join(""));
   $("#pullBtn").hidden = !(providers.sheets && providers.source_sheet);
   $("#pushBtn").hidden = !(providers.sheets && providers.dest_sheet);
   $("#baselineBtn").hidden = !(providers.sheets && providers.source_sheet);
@@ -143,7 +153,16 @@ async function loadStats() {
 const _charts = {};
 const _ready = () => typeof Chart !== "undefined";
 function _grad(ctx, a, b) { const ch = ctx.chart, area = ch.chartArea; if (!area) return cssVar(a); const g = ch.ctx.createLinearGradient(0, area.top, 0, area.bottom); g.addColorStop(0, cssVar(a)); g.addColorStop(1, cssVar(b)); return g; }
-function _draw(id, cfg) { if (!_ready()) return; const el = document.getElementById(id); if (!el) return; if (_charts[id]) { _charts[id].data = cfg.data; _charts[id].options = cfg.options; _charts[id].update(); } else { _charts[id] = new Chart(el, cfg); } }
+// Animate on first draw only; afterwards update silently, and skip entirely when
+// the data hasn't changed (polling would otherwise replay the animation every 2s).
+function _draw(id, cfg) {
+  if (!_ready()) return; const el = document.getElementById(id); if (!el) return;
+  const sig = JSON.stringify([cfg.data.labels, cfg.data.datasets.map((d) => d.data)]);
+  const ch = _charts[id];
+  if (!ch) { _charts[id] = new Chart(el, cfg); _charts[id]._sig = sig; return; }
+  if (ch._sig === sig) return;
+  ch._sig = sig; ch.data = cfg.data; ch.options = cfg.options; ch.update("none");
+}
 function _axisOpts() { const grid = cssVar("--border"), tick = cssVar("--muted"); return { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true } }, scales: { x: { grid: { display: false }, ticks: { color: tick, font: { size: 11 } } }, y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick, precision: 0, font: { size: 11 } } } } }; }
 function _bar(labels, data) { return { type: "bar", data: { labels, datasets: [{ data, backgroundColor: (c) => _grad(c, "--bar-top", "--bar-bot"), borderRadius: 7, maxBarThickness: 46 }] }, options: _axisOpts() }; }
 function _line(labels, data) { return { type: "line", data: { labels, datasets: [{ data, borderColor: cssVar("--accent"), backgroundColor: (c) => _grad(c, "--accent", "--bg"), fill: true, tension: .35, pointRadius: 2, pointBackgroundColor: cssVar("--accent") }] }, options: _axisOpts() }; }
@@ -159,18 +178,18 @@ async function loadAnalytics() {
   const oc = a.statuses || {}, acc = oc.accepted || 0, rev = oc.review || 0, rej = oc.rejected || 0, tot = acc + rev + rej;
   const sw = [cssVar("--accent"), cssVar("--accent-2"), cssVar("--faint")];
   _draw("chOutcomes", _donut([acc, rev, rej], sw));
-  $("#ocTotal").textContent = tot;
+  if ($("#ocTotal").textContent !== String(tot)) $("#ocTotal").textContent = tot;
   const pct = (n) => (tot ? (n / tot * 100).toFixed(1) : "0.0") + "%";
   const rows = [["Accepted", acc, sw[0]], ["In Review", rev, sw[1]], ["Rejected", rej, sw[2]]];
-  $("#ocLegend").innerHTML = rows.map(([lbl, n, color]) => `<li>
+  setHTML($("#ocLegend"), rows.map(([lbl, n, color]) => `<li>
     <span class="lg"><span class="sw" style="background:${color}"></span>${lbl}</span>
     <span class="cnt">${n}</span><span class="pct">${pct(n)}</span>
-    <span class="bar"><span style="width:${tot ? (n / tot * 100) : 0}%;background:${color}"></span></span></li>`).join("");
-  // sparklines + total trend
+    <span class="bar"><span style="width:${tot ? (n / tot * 100) : 0}%;background:${color}"></span></span></li>`).join(""));
+  // sparklines + total trend: stored for loadStats, re-render tiles only if changed
   const sp = sparkline(series.length ? series : [tot, tot]);
-  document.querySelectorAll(".spark-slot").forEach((s) => (s.innerHTML = sp));
-  const tr = $("#trendTotal");
-  if (tr && series.length >= 2) { const half = Math.ceil(series.length / 2), older = series.slice(0, half).reduce((x, y) => x + y, 0), recent = series.slice(half).reduce((x, y) => x + y, 0); const pc = older ? Math.round((recent - older) / older * 100) : (recent ? 100 : 0); tr.textContent = `${pc >= 0 ? "↗" : "↘"} ${Math.abs(pc)}%`; tr.className = "trend " + (pc >= 0 ? "up" : "down"); }
+  let trend = { text: "", cls: "trend" };
+  if (series.length >= 2) { const half = Math.ceil(series.length / 2), older = series.slice(0, half).reduce((x, y) => x + y, 0), recent = series.slice(half).reduce((x, y) => x + y, 0); const pc = older ? Math.round((recent - older) / older * 100) : (recent ? 100 : 0); trend = { text: `${pc >= 0 ? "↗" : "↘"} ${Math.abs(pc)}%`, cls: "trend " + (pc >= 0 ? "up" : "down") }; }
+  if (sp !== _spark || trend.text !== _trend.text) { _spark = sp; _trend = trend; loadStats(); }
 }
 
 // ── Drawer ──────────────────────────────────────────────────────────────────
@@ -192,9 +211,10 @@ async function openDrawer(id) {
     ${lead.queries ? `<h3>Search queries</h3><div class="tags">${lead.queries.map((q) => `<span class="tag">${esc(q)}</span>`).join("")}</div>` : ""}
     ${lead.error ? `<h3>Error</h3><div class="cand-reason" style="color:var(--bad)">${esc(lead.error)}</div>` : ""}
     <h3>Candidates (${cands.length})</h3>${candHtml}
-    ${lead.status === "review" || lead.status === "accepted" ? `<div style="margin-top:14px"><button class="mini no" id="rejectBtn">Reject lead</button></div>` : ""}`;
+    <div class="row-actions" style="justify-content:flex-start;margin-top:14px">${lead.status === "review" || lead.status === "accepted" ? `<button class="mini no" id="rejectBtn">Reject lead</button>` : ""}<button class="mini no" id="deleteBtn">Delete lead</button></div>`;
   $("#drawerBody").querySelectorAll("[data-choose]").forEach((b) => b.addEventListener("click", async () => { await fetch(`/api/leads/${id}/choose`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ candidate_index: +b.dataset.choose }) }); closeDrawer(); refresh(); }));
   const rej = $("#rejectBtn"); if (rej) rej.addEventListener("click", async () => { await fetch(`/api/leads/${id}/reject`, { method: "POST" }); closeDrawer(); refresh(); });
+  $("#deleteBtn").addEventListener("click", async () => { if (await deleteLead(id)) closeDrawer(); });
   $("#drawer").classList.add("open");
 }
 function closeDrawer() { $("#drawer").classList.remove("open"); }

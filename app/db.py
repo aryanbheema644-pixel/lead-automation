@@ -218,6 +218,13 @@ def stats() -> dict:
     return out
 
 
+def delete_lead(lead_id: int) -> bool:
+    """Delete one lead. Its dedup key stays in seen_leads, so a sheet pull
+    won't re-ingest it."""
+    with _lock, _conn() as conn:
+        return conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,)).rowcount > 0
+
+
 def clear_all() -> None:
     with _lock, _conn() as conn:
         conn.execute("DELETE FROM leads")

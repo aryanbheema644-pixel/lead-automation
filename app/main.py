@@ -435,6 +435,13 @@ def reject(lead_id: int) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.delete("/api/leads/{lead_id}")
+def delete_lead(lead_id: int) -> JSONResponse:
+    if not db.delete_lead(lead_id):
+        raise HTTPException(404, "Lead not found")
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/reset")
 def reset() -> JSONResponse:
     db.clear_all()
