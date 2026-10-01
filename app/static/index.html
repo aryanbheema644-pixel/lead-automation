@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,6 +9,7 @@
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
+  <div class="aurora"></div>
   <div class="app">
     <!-- Sidebar -->
     <aside class="sidebar">
@@ -17,39 +18,82 @@
         <div><div class="brand-name">LeadSearch</div><div class="brand-sub">Beyond Border</div></div>
       </div>
       <nav class="side-nav" id="nav">
-        <a href="#dashboard" data-page="dashboard" class="nav-item"><span class="ico">◧</span> Dashboard</a>
-        <a href="#pipeline" data-page="pipeline" class="nav-item"><span class="ico">⇉</span> Pipeline</a>
-        <a href="#leads" data-page="leads" class="nav-item"><span class="ico">☰</span> Leads</a>
-        <a href="#review" data-page="review" class="nav-item"><span class="ico">✓</span> Review <span id="reviewCount" class="nav-badge">0</span></a>
+        <a href="#dashboard" data-page="dashboard" class="nav-item"><svg viewBox="0 0 24 24" class="ico"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/></svg> Dashboard</a>
+        <a href="#pipeline" data-page="pipeline" class="nav-item"><svg viewBox="0 0 24 24" class="ico"><path d="M4 7h10"/><path d="M4 17h10"/><circle cx="18" cy="7" r="2"/><circle cx="18" cy="17" r="2"/></svg> Pipeline</a>
+        <a href="#leads" data-page="leads" class="nav-item"><svg viewBox="0 0 24 24" class="ico"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 6a3 3 0 0 1 0 6"/></svg> Leads</a>
+        <a href="#review" data-page="review" class="nav-item"><svg viewBox="0 0 24 24" class="ico"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 10l2 2 4-4"/></svg> Review <span id="reviewCount" class="nav-badge">0</span></a>
       </nav>
-      <div class="side-foot" id="providers"></div>
+      <div class="side-sources">
+        <div class="sources-title">Data sources</div>
+        <ul id="providers"></ul>
+      </div>
+      <div class="side-user">
+        <div class="avatar">BB</div>
+        <div><div class="su-name">Beyond Border</div><div class="su-sub">GTM Team</div></div>
+        <span class="su-chev">›</span>
+      </div>
     </aside>
 
     <!-- Main -->
     <div class="main">
       <header class="topbar">
-        <h2 id="pageTitle">Dashboard</h2>
-        <div class="actions">
-          <button id="runBtn" class="btn primary">Run pipeline ▸</button>
-          <button id="pullBtn" class="btn ghost" hidden>⬇ Pull</button>
-          <button id="pushBtn" class="btn ghost" hidden>⬆ Push</button>
-          <button id="baselineBtn" class="btn ghost" hidden title="Mark current source rows as seen">⦰ Baseline</button>
-          <a href="/api/export" class="btn ghost">Export</a>
-          <button id="resetBtn" class="btn danger-ghost">Reset</button>
+        <div class="search"><svg viewBox="0 0 24 24" class="s-ico"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          <input type="text" placeholder="Search leads, channels, or anything…" id="searchInput" />
+          <span class="kbd">⌘K</span>
+        </div>
+        <div class="top-right">
+          <button class="icon-btn" id="themeToggle" title="Toggle theme">◐</button>
+          <button class="icon-btn" title="Notifications"><svg viewBox="0 0 24 24" class="s-ico"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg></button>
+          <div class="avatar sm">BB</div>
         </div>
       </header>
-      <div id="uploadMsg" class="msg"></div>
 
       <div class="content">
         <!-- Dashboard -->
         <section class="page" data-page="dashboard">
+          <div class="head-row">
+            <div>
+              <h1 id="greeting">Good evening,</h1>
+              <p class="subtle">Here's an overview of your lead pipeline today.</p>
+            </div>
+            <div class="toolbar">
+              <span class="daterange"><svg viewBox="0 0 24 24" class="s-ico"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg> Last 7 days</span>
+              <button id="runBtn" class="btn primary">▶ Run pipeline</button>
+              <button id="pullBtn" class="btn ghost" hidden>↓ Pull</button>
+              <button id="pushBtn" class="btn ghost" hidden>↑ Push</button>
+              <button id="baselineBtn" class="btn ghost" hidden>⦰ Baseline</button>
+              <a href="/api/export" class="btn ghost">⤓ Export</a>
+              <button id="resetBtn" class="btn danger-ghost">⟲ Reset</button>
+            </div>
+          </div>
+          <div id="uploadMsg" class="msg"></div>
+
           <div class="stat-row" id="stats"></div>
+
           <div class="analytics">
-            <div class="panel chart-card"><h3>Leads by channel</h3><div class="chart-wrap"><canvas id="chChannels"></canvas></div></div>
-            <div class="panel chart-card"><h3>Outcomes</h3><div class="chart-wrap"><canvas id="chOutcomes"></canvas></div></div>
-            <div class="panel chart-card"><h3>Fit verdicts</h3><div class="chart-wrap"><canvas id="chTiers"></canvas></div></div>
-            <div class="panel chart-card"><h3>AE workload</h3><div class="chart-wrap"><canvas id="chOwners"></canvas></div></div>
-            <div class="panel chart-card wide"><h3>Leads over time</h3><div class="chart-wrap"><canvas id="chTime"></canvas></div></div>
+            <div class="panel chart-card">
+              <div class="cc-head"><div><h3>Leads by Channel</h3><p class="cc-sub">Distribution across sources</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="chart-wrap"><canvas id="chChannels"></canvas></div>
+            </div>
+            <div class="panel chart-card">
+              <div class="cc-head"><div><h3>Outcomes</h3><p class="cc-sub">Overall lead outcomes</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="outcomes">
+                <div class="donut-wrap"><canvas id="chOutcomes"></canvas><div class="donut-center"><div class="dc-num" id="ocTotal">0</div><div class="dc-lbl">Total Leads</div></div></div>
+                <ul class="oc-legend" id="ocLegend"></ul>
+              </div>
+            </div>
+            <div class="panel chart-card">
+              <div class="cc-head"><div><h3>Fit Verdicts</h3><p class="cc-sub">LLM / AE fit assessment</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="chart-wrap"><canvas id="chTiers"></canvas></div>
+            </div>
+            <div class="panel chart-card">
+              <div class="cc-head"><div><h3>AE Workload</h3><p class="cc-sub">Leads per Account Executive</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="chart-wrap"><canvas id="chOwners"></canvas></div>
+            </div>
+            <div class="panel chart-card wide">
+              <div class="cc-head"><div><h3>Leads Over Time</h3><p class="cc-sub">Daily pipeline activity</p></div><span class="chip-sel">Last 14 days ▾</span></div>
+              <div class="chart-wrap"><canvas id="chTime"></canvas></div>
+            </div>
           </div>
         </section>
 
@@ -59,17 +103,12 @@
             <input type="file" id="fileInput" accept=".csv" hidden />
             <span class="filedrop-icon">⬆</span>
             <span class="filedrop-text">Drop a leads CSV or <b>browse</b></span>
-            <span class="filedrop-hint">or use ⬇ Pull to read from Google Sheets</span>
+            <span class="filedrop-hint">or use ↓ Pull to read from Google Sheets</span>
           </label>
           <div class="panel pipeline" id="pipeline">
-            <div class="pipeline-head">
-              <span class="pipeline-title">Live pipeline</span>
-              <span class="pipeline-now" id="pipelineNow">Idle</span>
-            </div>
+            <div class="pipeline-head"><span class="pipeline-title">Live pipeline</span><span class="pipeline-now" id="pipelineNow">Idle</span></div>
             <svg id="snake" viewBox="0 0 920 340" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-              <defs><linearGradient id="doneGrad" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0" stop-color="var(--primary)"/><stop offset="1" stop-color="var(--primary-2)"/>
-              </linearGradient></defs>
+              <defs><linearGradient id="doneGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs>
               <path id="track" class="track" d="M130,100 H790 Q860,100 860,170 Q860,240 790,240 H130" pathLength="100"/>
               <path id="trackDone" class="track-done" d="M130,100 H790 Q860,100 860,170 Q860,240 790,240 H130" pathLength="100" stroke-dasharray="0 100"/>
               <g class="flow">
@@ -109,12 +148,8 @@
   </div>
 
   <div id="drawer" class="drawer">
-    <div class="drawer-panel">
-      <button class="drawer-close" id="drawerClose">✕</button>
-      <div id="drawerBody"></div>
-    </div>
+    <div class="drawer-panel"><button class="drawer-close" id="drawerClose">✕</button><div id="drawerBody"></div></div>
   </div>
-
   <script src="/static/app.js"></script>
 </body>
 </html>
