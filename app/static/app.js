@@ -100,18 +100,19 @@ async function loadReview() {
   wireRowButtons(w);
 }
 
+const _IC = 'width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
 const ICONS = {
-  people: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 6a3 3 0 0 1 0 6"/></svg>',
-  check: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-5"/></svg>',
-  clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-  x: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>',
+  people: `<svg ${_IC}><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 6a3 3 0 0 1 0 6"/></svg>`,
+  check: `<svg ${_IC}><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-5"/></svg>`,
+  clock: `<svg ${_IC}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`,
+  x: `<svg ${_IC}><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>`,
 };
 function sparkline(vals) {
   if (!vals || vals.length < 2) vals = [1, 1];
   const w = 84, h = 30, max = Math.max(...vals), min = Math.min(...vals), rng = (max - min) || 1;
   const pts = vals.map((v, i) => [(i / (vals.length - 1)) * w, h - 2 - ((v - min) / rng) * (h - 5)]);
   const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path d="${d} L ${w} ${h} L 0 ${h} Z" fill="var(--muted)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--muted)" stroke-width="1.6"/></svg>`;
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path d="${d} L ${w} ${h} L 0 ${h} Z" fill="var(--muted)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--muted)" stroke-width="1.6"/></svg>`;
 }
 async function loadStats() {
   const st = await (await fetch("/api/status")).json();
