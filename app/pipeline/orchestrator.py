@@ -114,21 +114,24 @@ def process_lead(lead_id: int) -> None:
         gen_li = [r for r in results if _is_li_profile(r["url"])]
         gen_other = [r for r in results if not _is_li_profile(r["url"])]
 
-        # 1) URL the lead already provided (highest trust)
-        provided_hits = []
-        provided_li = (lead.get("linkedin") or "").strip()
-        if provided_li.startswith("http") and "linkedin.com" in provided_li.lower():
-            provided_hits = [{"url": provided_li, "title": "Provided LinkedIn URL",
-                              "snippet": "", "raw_content": ""}]
+        # A non-LinkedIn link the lead gave us (Instagram, IMDb, Scholar, ...) is
+        # verified like any other candidate rather than trusted blindly.
+        other_link = (lead.get("other_link") or "").strip()
+        provided_other = []
+        if other_link:
+            provided_other = [{"url": other_link, "title": "Link provided by the lead",
+                               "snippet": "", "raw_content": "", "_provided": True}]
+            gen_other = [r for r in gen_other
+                         if r["url"].rstrip("/").lower() != other_link.rstrip("/").lower()]
 
-        # 2) LinkedIn from the general (name+company+role) results — high precision
-        # 3) LinkedIn discovery via the Apify search actor (queries LinkedIn's own
-        #    index; "Full" mode returns profile data inline). Falls back to a
-        #    Tavily domain-restricted pass if the search actor isn't configured.
+        # LinkedIn candidates: from the general (name+company+role) results — high
+        # precision — plus discovery via the Apify search actor (queries LinkedIn's
+        # own index; "Full" mode returns profile data inline), falling back to a
+        # Tavily domain-restricted pass if the search actor isn't configured.
         # If the lead said they have no LinkedIn, do NO LinkedIn searching of any
         # kind: skip discovery AND drop any LinkedIn URLs the general web search
         # surfaced. Other enrichment (personal site, company, news, ...) still runs.
-        if lead.get("li_optout") and not provided_hits:
+        if lead.get("li_optout"):
             lane_li = []
             gen_li = []
         else:
@@ -137,17 +140,18 @@ def process_lead(lead_id: int) -> None:
                 lane_li = linkedin_search(extracted)
 
         # Merge with dedup, preserving priority order:
-        # provided URL > Apify search (reliable, has data) > Tavily-found LinkedIn.
+        # Apify search (reliable, has data) > Tavily-found LinkedIn.
         seen, li_ordered = set(), []
-        for r in provided_hits + lane_li + gen_li:
+        for r in lane_li + gen_li:
             key = r["url"].rstrip("/").lower()
             if key not in seen:
                 seen.add(key)
                 li_ordered.append(r)
         li_added = li_ordered[: config.MAX_LINKEDIN_CANDIDATES]
 
-        # LinkedIn candidates go first (each fetched via Apify), then general.
-        results = li_added + gen_other
+        # LinkedIn candidates go first (each fetched via Apify), then the lead's
+        # own link, then general results.
+        results = li_added + provided_other + gen_other
 
         # Step 5 — classify
         for res in results:
@@ -156,7 +160,7 @@ def process_lead(lead_id: int) -> None:
         # Steps 6 + 7 — acquire content and match (capped for cost)
         _set_stage(lead_id, "matching")
         candidates: list[dict] = []
-        match_cap = config.MAX_CANDIDATES_MATCHED + len(li_added)
+        match_cap = config.MAX_CANDIDATES_MATCHED + len(li_added) + len(provided_other)
         for res in results[:match_cap]:
             content, content_src = acquire_content(res)
             match = llm.match_candidate(extracted, res, content,
@@ -179,6 +183,7 @@ def process_lead(lead_id: int) -> None:
                         "role": match.get("role_match"),
                     },
                     "person": person,
+                    "provided": bool(res.get("_provided")),
                 }
             )
 
@@ -189,8 +194,21 @@ def process_lead(lead_id: int) -> None:
         # Step 8 — decide (LinkedIn-priority logic; returns the chosen profile)
         status, confidence, reasoning, chosen = decide(candidates)
 
-        # Step 9 — screen the chosen LinkedIn profile through the RAG console
-        screen_summary = _screen_lead(lead_id, chosen) if chosen else None
+        # The lead gave us their own link but nothing verified well enough: don't
+        # reject someone over their own link — send it to review for a human.
+        if status == "rejected" and provided_other:
+            prov = next((c for c in candidates if c.get("provided")), None)
+            if prov:
+                status, chosen = "review", prov
+                reasoning = ("The lead provided this link, but it couldn't be "
+                             "confidently verified — please check. "
+                             + (prov.get("reasoning") or ""))
+
+        # Step 9 — screen the chosen profile through the RAG console. Only
+        # LinkedIn profiles can be screened (_screen_lead skips anything else),
+        # and leads who said they have no LinkedIn are never screened.
+        screen_summary = (_screen_lead(lead_id, chosen)
+                          if chosen and not lead.get("li_optout") else None)
 
         # Step 10 — assign the AE (Owner) per the distribution rules
         owner = distribution.assign_owner({

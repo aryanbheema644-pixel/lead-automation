@@ -29,6 +29,7 @@ _COLUMNS = {
     "phone": "TEXT",
     "linkedin": "TEXT",
     "li_optout": "INTEGER DEFAULT 0",
+    "other_link": "TEXT",          # a non-LinkedIn profile link the lead provided
     "visa": "TEXT",
     "lead_date": "TEXT",
     "message": "TEXT",
@@ -119,17 +120,17 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 
 def insert_lead(name: str, company: str, email: str, phone: str, message: str,
-                linkedin: str = "", li_optout: int = 0,
+                linkedin: str = "", li_optout: int = 0, other_link: str = "",
                 visa: str = "", lead_date: str = "", channel: str = "") -> int:
     now = time.time()
     with _lock, _conn() as conn:
         cur = conn.execute(
             """INSERT INTO leads (name, company, channel, email, phone, linkedin,
-                                  li_optout, visa, lead_date, message, status,
-                                  created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
-            (name, company, channel, email, phone, linkedin, li_optout, visa,
-             lead_date, message, now, now),
+                                  li_optout, other_link, visa, lead_date, message,
+                                  status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+            (name, company, channel, email, phone, linkedin, li_optout, other_link,
+             visa, lead_date, message, now, now),
         )
         return int(cur.lastrowid)
 

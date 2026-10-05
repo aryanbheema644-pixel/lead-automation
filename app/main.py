@@ -62,7 +62,8 @@ _LINKEDIN_RE = re.compile(r"(?:https?://)?[a-z0-9.\-]*linkedin\.com/[^\s,;\"'>)\
 # Any other URL (http(s):// or www.), used to spot a non-LinkedIn link.
 _ANY_URL_RE = re.compile(r"(?:https?://|www\.)[^\s,;\"'>)\]]+", re.I)
 _TRIM = ".,;)]'\""
-# Phrases where the lead says they have no LinkedIn -> add directly, no discovery.
+# Phrases where the lead says they have no LinkedIn -> the pipeline skips the
+# LinkedIn search (other web enrichment still runs) and the lead isn't screened.
 _LI_OPTOUT = (
     "don't have", "do not have", "dont have", "no linkedin", "not on linkedin",
     "don't use", "dont use", "no profile", "i don't have", "not available",
@@ -104,8 +105,13 @@ def classify_linkedin(li_cell: str, message: str) -> dict:
     other = _first_other_url(li_cell)            # a non-LinkedIn link in the field
     if other:
         return {"linkedin_url": "", "other_url": other, "optout": False}
-    blob = f"{li_cell} {message}".lower()        # explicit "no LinkedIn"
-    if any(p in blob for p in _LI_OPTOUT):
+    # Explicit "no LinkedIn": any opt-out phrase in the LinkedIn field, or in the
+    # message only when it's about LinkedIn (so "not available Monday" doesn't
+    # count). Curly apostrophes ("Don’t have one") are normalized first.
+    cell = (li_cell or "").lower().replace("’", "'")
+    msg = (message or "").lower().replace("’", "'")
+    if any(p in cell for p in _LI_OPTOUT) or (
+            "linkedin" in msg and any(p in msg for p in _LI_OPTOUT)):
         return {"linkedin_url": "", "other_url": "", "optout": True}
     return {"linkedin_url": "", "other_url": "", "optout": False}
 
@@ -135,23 +141,14 @@ def _insert_row(val, channel: str = "") -> bool:
     lead_id = db.insert_lead(
         val("name"), val("company"), val("email"), val("phone"), val("message"),
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
+        other_link=info["other_url"],
         visa=val("visa"), lead_date=val("date"), channel=channel,
     )
-    # Routing:
-    #  - provided LinkedIn -> stays 'queued'; the worker skips discovery but still
-    #    scrapes+screens that URL (no search/refinement).
-    #  - non-LinkedIn link / opt-out -> accepted directly (nothing to screen).
-    #  - no usable link -> 'queued' for the full discovery pipeline + screening.
-    if info["linkedin_url"]:
-        pass  # queued; process_lead fast-path handles it
-    elif info["other_url"]:
-        db.update_lead(lead_id, status="accepted", stage="provided", confidence=None,
-                       chosen={"url": info["other_url"], "source_type": "other link", "person": {}},
-                       reasoning="A non-LinkedIn link was provided; added directly, not verified.")
-    elif info["optout"]:
-        db.update_lead(lead_id, status="accepted", stage="no_linkedin", confidence=None,
-                       chosen={}, reasoning="Lead has no LinkedIn; added directly.")
-    # else: stays 'queued' -> the pipeline will refine (discover the LinkedIn).
+    # Every lead stays 'queued'; process_lead routes it:
+    #  - provided LinkedIn -> fast path: scrape + screen that URL, no search.
+    #  - non-LinkedIn link -> full pipeline, with that link verified as a candidate.
+    #  - "no LinkedIn"     -> full pipeline minus the LinkedIn search; not screened.
+    #  - nothing usable    -> full pipeline (LinkedIn discovery) + screening.
     return True
 
 
