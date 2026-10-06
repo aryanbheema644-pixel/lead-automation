@@ -173,11 +173,23 @@ function renderAutomation(a) {
   const el = $("#autoBar"); if (!el || !a) return;
   el.hidden = false;
   if (!a.enabled) { _autoNextAt = null; setHTML(el, `<span class="auto-dot"></span><b>Automation off</b><span class="sub">Set SCHEDULER_ENABLED=true on Render to run every ${Math.round(a.interval / 60)} min.</span>`); return; }
-  _autoNextAt = a.running || a.next_in == null ? null : Date.now() + a.next_in * 1000;
+  _autoNextAt = a.running || a.paused || a.next_in == null ? null : Date.now() + a.next_in * 1000;
   const disk = a.persistent_disk ? "" : `<span class="auto-warn">⚠ No persistent disk (DATA_DIR not set) — data resets on deploy</span>`;
-  setHTML(el, `<span class="auto-dot on"></span><b>Automation on</b> · every ${Math.round(a.interval / 60)} min · <span id="autoNext">${a.running ? "running now…" : ""}</span><span class="sub">${esc(_lastRunText(a.last))}</span>${disk}`);
+  const btn = a.paused
+    ? `<button class="auto-btn" data-pause="0" title="Resume: runs a cycle now, then every ${Math.round(a.interval / 60)} min">▶ Resume</button>`
+    : `<button class="auto-btn" data-pause="1" title="Pause: a running cycle finishes, no new ones start">⏸ Pause</button>`;
+  const state = a.paused
+    ? `<span class="auto-dot paused"></span><b>Automation paused</b>${a.running ? " · finishing the current cycle…" : " · no automatic pulls or pushes"}`
+    : `<span class="auto-dot on"></span><b>Automation on</b> · every ${Math.round(a.interval / 60)} min · <span id="autoNext">${a.running ? "running now…" : ""}</span>`;
+  setHTML(el, `${btn}${state}<span class="sub">${esc(_lastRunText(a.last))}</span>${disk}`);
   tickAutomation();
 }
+$("#autoBar").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-pause]"); if (!b) return;
+  b.disabled = true;
+  try { const a = await readResponse(await fetch("/api/automation/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused: b.dataset.pause === "1" }) })); renderAutomation(a); setTimeout(loadStats, 1500); }
+  catch (err) { alert(err.message); b.disabled = false; }
+});
 function tickAutomation() {
   const n = $("#autoNext"); if (!n || _autoNextAt == null) return;
   const s = Math.max(0, Math.round((_autoNextAt - Date.now()) / 1000));

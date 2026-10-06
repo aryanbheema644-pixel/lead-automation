@@ -93,14 +93,24 @@ def _run_cycle(trigger: str) -> dict:
     return result
 
 
+def _paused() -> bool:
+    return db.meta_get("sched_paused") == "1"
+
+
 def _scheduler_loop() -> None:
     if _next_run() <= 0:
         _set_next_run(time.time() + 60)        # first ever start: first cycle in a minute
     while not _scheduler_stop.is_set():
+        if _paused():
+            _wake.wait()                        # sleep until resumed (or stopped)
+            _wake.clear()
+            continue
         woke = _wake.wait(max(0.0, _next_run() - time.time()))
         _wake.clear()
         if _scheduler_stop.is_set():
             break
+        if _paused():
+            continue                            # paused while waiting
         _run_cycle("manual" if woke else "scheduled")
 
 
@@ -128,7 +138,9 @@ def _automation_status() -> dict:
         "interval": config.SCHEDULER_INTERVAL_SECONDS,
         "max_per_cycle": config.SCHEDULER_MAX_PER_CYCLE,
         "running": db.meta_get("sched_running") == "1",
-        "next_in": max(0, round(nxt - time.time())) if config.SCHEDULER_ENABLED and nxt else None,
+        "paused": _paused(),
+        "next_in": (max(0, round(nxt - time.time()))
+                    if config.SCHEDULER_ENABLED and nxt and not _paused() else None),
         "last": last,
         "seen": db.count_seen(),
         "persistent_disk": bool(os.getenv("DATA_DIR")),
@@ -681,10 +693,25 @@ def sheets_push() -> JSONResponse:
         raise HTTPException(400, str(e))
     # With automation on, a manual Push also runs a full cycle now (pull new
     # leads, process, push) and the 10-minute countdown restarts after it.
-    if config.SCHEDULER_ENABLED and not _cycle_lock.locked():
+    if config.SCHEDULER_ENABLED and not _paused() and not _cycle_lock.locked():
         _wake.set()
         out["cycle_started"] = True
     return JSONResponse(out)
+
+
+@app.post("/api/automation/pause")
+def automation_pause(body: dict) -> JSONResponse:
+    """Pause or resume the automation. Pausing lets a running cycle finish but
+    starts no new ones; resuming runs a cycle right away (to catch leads that
+    arrived meanwhile), then every interval again. Persisted across restarts."""
+    if not config.SCHEDULER_ENABLED:
+        raise HTTPException(400, "Automation is not enabled on this server (SCHEDULER_ENABLED).")
+    paused = bool(body.get("paused"))
+    db.meta_set("sched_paused", "1" if paused else "0")
+    if not paused:
+        _set_next_run(time.time())
+    _wake.set()                                 # let the loop see the change now
+    return JSONResponse(_automation_status())
 
 
 @app.post("/api/run")

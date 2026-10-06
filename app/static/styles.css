@@ -120,6 +120,10 @@ h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -0.03em; }
 .auto-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
 .auto-dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
 .auto-warn { color: var(--warn); font-weight: 600; }
+.auto-dot.paused { background: var(--warn); }
+.auto-btn { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+.auto-btn:hover { border-color: var(--accent); }
+.auto-btn:disabled { opacity: .5; cursor: default; }
 
 .panel { background: var(--panel); background-image: var(--card-grad); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); }
 
