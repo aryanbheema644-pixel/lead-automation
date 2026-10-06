@@ -88,18 +88,33 @@ AE_ROUND_ROBIN = _get_list("AE_ROUND_ROBIN", "Vansh,Rahul,Agustina,Rocio")
 AE_LATAM = _get_list("AE_LATAM", "Agustina,Rocio")   # LATAM round-robin (Tina/Rocio)
 AE_PILOT = _get("AE_PILOT", "Rahul")                 # pilots (profession) -> Rahul
 
+
+def _get_directory(name: str, default: str) -> dict[str, tuple[str, str]]:
+    """'Rahul:32114362:Rahul Bamal, …' -> {'rahul': ('32114362', 'Rahul Bamal')}."""
+    out = {}
+    for entry in _get(name, default).split(","):
+        parts = [p.strip() for p in entry.split(":")]
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            out[parts[0].lower()] = (parts[1], parts[2] if len(parts) > 2 and parts[2] else parts[0])
+    return out
+
+
+# Pipedrive user id + full name per AE, keyed by the name used in the rules above.
+# Written to the sheet's "Owner (AE) Id" and "Owner Name" columns.
+AE_DIRECTORY = _get_directory(
+    "AE_DIRECTORY",
+    "Agustina:32114373:Agustina Ortiz,Vansh:32114351:Vansh,"
+    "Rahul:32114362:Rahul Bamal,Rocio:32884736:Rocio Hernandez",
+)
+
 # Auto-ingest scheduler: periodically pull new leads from the source sheet, run
 # the pipeline, and push results. OFF by default (it spends money + writes to the
 # sheet). Dedup ensures the same lead is never processed twice.
 SCHEDULER_ENABLED = _get("SCHEDULER_ENABLED", "false").lower() in ("1", "true", "yes")
-SCHEDULER_INTERVAL_SECONDS = _get_int("SCHEDULER_INTERVAL_SECONDS", 900)  # 15 min
+SCHEDULER_INTERVAL_SECONDS = _get_int("SCHEDULER_INTERVAL_SECONDS", 600)  # 10 min
 SCHEDULER_MAX_PER_CYCLE = _get_int("SCHEDULER_MAX_PER_CYCLE", 50)  # cap new leads/cycle
 
 
-def scheduler_status() -> dict:
-    return {"enabled": SCHEDULER_ENABLED,
-            "interval": SCHEDULER_INTERVAL_SECONDS,
-            "max_per_cycle": SCHEDULER_MAX_PER_CYCLE}
 MAX_RESULTS_PER_LEAD = _get_int("MAX_RESULTS_PER_LEAD", 10)
 MAX_CANDIDATES_MATCHED = _get_int("MAX_CANDIDATES_MATCHED", 5)
 # How many LinkedIn profiles to match (on top of MAX_CANDIDATES_MATCHED, so

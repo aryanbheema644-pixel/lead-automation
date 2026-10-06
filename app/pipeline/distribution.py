@@ -27,7 +27,14 @@ _PILOT_RE = re.compile(
     r"\bpilot\b(?!\s+(?:program|study|project|test|phase|batch|wave|cohort|episode|season))",
     re.I)
 _PILOT_TERMS = ("airline pilot", "commercial pilot", "first officer", "aviator",
-                "airline transport pilot", "flight officer", "atpl", "cpl")
+                "airline transport pilot", "flight officer", "airline captain",
+                "flight captain", "captain pilot")
+# Licence abbreviations, as whole words only ("cpl" must not match inside words).
+_PILOT_LICENCE_RE = re.compile(r"\b(?:atpl|cpl)\b", re.I)
+# "Captain" alone is ambiguous (army, ship, team) — count it only with aviation context.
+_CAPTAIN_RE = re.compile(r"\bcaptain\b", re.I)
+_AVIATION_RE = re.compile(r"\b(?:airline|airlines|aviation|airbus|boeing|a320|b737|"
+                          r"flight|aircraft|flying)\b", re.I)
 
 
 def _digits(s: str) -> str:
@@ -35,7 +42,13 @@ def _digits(s: str) -> str:
 
 
 def is_latam(lead: dict) -> bool:
-    ph = _digits(lead.get("phone", ""))
+    raw = (lead.get("phone") or "").strip()
+    ph = _digits(raw)
+    # A number written without "+" and 10 digits or fewer is a local number (e.g.
+    # US "5512345678"), not one starting with a country code — don't read "55"
+    # as Brazil. International numbers without "+" are 11+ digits.
+    if ph and not raw.startswith("+") and len(ph) <= 10:
+        ph = ""
     if ph:
         if ph.startswith("1") and ph[1:4] in _DR_AREA:
             return True
@@ -52,7 +65,9 @@ def is_pilot(lead: dict) -> bool:
     person = (lead.get("chosen") or {}).get("person") or {}
     blob = (f"{lead.get('message','')} {ex.get('role_guess','')} "
             f"{person.get('role','')} {person.get('company','')}").lower()
-    if any(t in blob for t in _PILOT_TERMS):
+    if any(t in blob for t in _PILOT_TERMS) or _PILOT_LICENCE_RE.search(blob):
+        return True
+    if _CAPTAIN_RE.search(blob) and _AVIATION_RE.search(blob):
         return True
     return bool(_PILOT_RE.search(blob))
 

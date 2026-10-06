@@ -5,6 +5,7 @@ on destination)."""
 from __future__ import annotations
 
 import json
+import re
 
 from . import config
 
@@ -69,15 +70,40 @@ def read_source_tabs() -> list[tuple[str, list[list[str]]]]:
         raise SheetsError(f"Could not read source tabs: {e}") from e
 
 
-def append_dest_rows(header: list[str], rows: list[list]) -> int:
-    """Append rows to the destination sheet, writing the header first if empty."""
+def open_dest():
+    """Return (worksheet, all current values) for the destination tab."""
     ws = _open_ws(config.GOOGLE_DEST_SHEET_ID, config.GOOGLE_DEST_TAB)
     try:
-        existing = ws.get_all_values()
-        if not existing:
-            ws.append_row(header, value_input_option="RAW")
-        if rows:
-            ws.append_rows(rows, value_input_option="RAW")
+        return ws, ws.get_all_values()
+    except Exception as e:  # noqa: BLE001
+        raise SheetsError(f"Could not read destination sheet: {e}") from e
+
+
+def write_cells(ws, cells: list[tuple[int, int, str]]) -> None:
+    """Overwrite individual cells, given as (row, col) 1-based, in one batch.
+    Only these cells are touched — anything else in the row is left as-is."""
+    if not cells:
+        return
+    from gspread.utils import rowcol_to_a1
+    data = [{"range": rowcol_to_a1(r, c), "values": [[v]]} for r, c, v in cells]
+    try:
+        ws.batch_update(data, value_input_option="RAW")
+    except Exception as e:  # noqa: BLE001
+        raise SheetsError(f"Could not update destination sheet: {e}") from e
+
+
+def append_rows(ws, rows: list[list]) -> list[int]:
+    """Append rows; returns the 1-based sheet row number each one landed on."""
+    if not rows:
+        return []
+    try:
+        resp = ws.append_rows(rows, value_input_option="RAW")
     except Exception as e:  # noqa: BLE001
         raise SheetsError(f"Could not write destination sheet: {e}") from e
-    return len(rows)
+    # e.g. updatedRange = "'Master leads '!A34:K36"
+    rng = ((resp or {}).get("updates") or {}).get("updatedRange", "")
+    m = re.search(r"![A-Z]+(\d+)", rng)
+    if not m:
+        return [0] * len(rows)
+    start = int(m.group(1))
+    return list(range(start, start + len(rows)))

@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-let pollTimer = null;
+let pollTimer = null, _rescreening = false;
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 // Only touch the DOM when the markup actually changed — the dashboard polls every
 // 2s while running, and blind re-renders make the page flicker and jump.
@@ -42,7 +42,7 @@ async function uploadFile(file) {
 $("#runBtn").addEventListener("click", async () => { const b = $("#runBtn"); b.disabled = true; try { const d = await readResponse(await fetch("/api/run", { method: "POST" })); $("#uploadMsg").className = "msg ok"; $("#uploadMsg").textContent = `Processing ${d.queued} queued leads…`; startPolling(); } catch (e) { $("#uploadMsg").className = "msg err"; $("#uploadMsg").textContent = e.message; } finally { setTimeout(() => (b.disabled = false), 1500); } });
 $("#resetBtn").addEventListener("click", async () => { if (!confirm("Delete all leads and results?")) return; await fetch("/api/reset", { method: "POST" }); refresh(); });
 $("#pullBtn").addEventListener("click", async () => { const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Pulling leads…"; try { const d = await readResponse(await fetch("/api/sheets/pull", { method: "POST" })); const bd = d.tabs ? " (" + Object.entries(d.tabs).map(([t, n]) => `${t}: ${n}`).join(", ") + ")" : ""; m.className = "msg ok"; m.textContent = `Pulled ${d.inserted} leads${bd}.`; refresh(); } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
-$("#pushBtn").addEventListener("click", async () => { const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Pushing…"; try { const d = await readResponse(await fetch("/api/sheets/push", { method: "POST" })); m.className = "msg ok"; m.textContent = d.pushed ? `Pushed ${d.pushed} leads.` : (d.note || "Nothing to push."); } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
+$("#pushBtn").addEventListener("click", async () => { const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Pushing…"; try { const d = await readResponse(await fetch("/api/sheets/push", { method: "POST" })); m.className = "msg ok"; const parts = []; if (d.added) parts.push(`added ${d.added}`); if (d.updated) parts.push(`updated ${d.updated}`); m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "") + (d.cycle_started ? " Automation cycle started — pulling new leads now; the 10-minute countdown restarts after it." : ""); if (d.cycle_started) { startPolling(); setTimeout(loadStats, 800); } } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
 $("#baselineBtn").addEventListener("click", async () => { if (!confirm("Mark ALL current source rows as seen (skip them)?")) return; const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Baselining…"; try { const d = await readResponse(await fetch("/api/sheets/baseline", { method: "POST" })); m.className = "msg ok"; m.textContent = `Baselined ${d.baselined} rows.`; } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
 
 // ── Pipeline animation ──────────────────────────────────────────────────────
@@ -82,6 +82,9 @@ async function rejectLead(id) { await fetch(`/api/leads/${id}/reject`, { method:
 // ── Views ───────────────────────────────────────────────────────────────────
 async function loadLeads() {
   const { leads } = await (await fetch("/api/leads?status=all")).json();
+  // A reviewer-triggered re-screen runs outside the queue; keep polling until it lands.
+  _rescreening = leads.some((l) => l.screening && l.screening.note === "Screening this LinkedIn profile…");
+  if (_rescreening) startPolling();
   const tb = $("#leadRows");
   if (!leads.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`); return; }
   if (setHTML(tb, leads.map((l) => `<tr>
@@ -144,10 +147,44 @@ async function loadStats() {
   $("#pullBtn").hidden = !(providers.sheets && providers.source_sheet);
   $("#pushBtn").hidden = !(providers.sheets && providers.dest_sheet);
   $("#baselineBtn").hidden = !(providers.sheets && providers.source_sheet);
+  renderAutomation(st.scheduler);
   updatePipeline(st);
-  if (!running && (stats.queued === 0 && stats.processing === 0)) stopPolling();
+  const cycle = !!(st.scheduler && st.scheduler.running);
+  if (running || cycle) startPolling();
+  else if (!_rescreening && stats.queued === 0 && stats.processing === 0) stopPolling();
   return running;
 }
+
+// ── Automation status ─────────────────────────────────────────────────────
+let _autoNextAt = null;
+function _ago(t) { const s = Math.max(0, Math.round(Date.now() / 1000 - t)); return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; }
+function _lastRunText(l) {
+  if (!l) return "no run yet";
+  if (l.error) return `last run ${_ago(l.finished)} failed: ${l.error}`;
+  const p = [];
+  if (l.baselined != null) p.push(`marked ${l.baselined} existing rows as seen (backlog skipped)`);
+  if (l.pulled != null) p.push(`${l.pulled} new lead${l.pulled === 1 ? "" : "s"}`);
+  if (l.added || l.updated) p.push(`sheet: ${l.added || 0} added, ${l.updated || 0} updated`);
+  if (l.in_review) p.push(`${l.in_review} awaiting review`);
+  if (l.incomplete) p.push(`${l.incomplete} incomplete held back`);
+  return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (Push)" : ""}: ${p.join(" · ") || "nothing new"}`;
+}
+function renderAutomation(a) {
+  const el = $("#autoBar"); if (!el || !a) return;
+  el.hidden = false;
+  if (!a.enabled) { _autoNextAt = null; setHTML(el, `<span class="auto-dot"></span><b>Automation off</b><span class="sub">Set SCHEDULER_ENABLED=true on Render to run every ${Math.round(a.interval / 60)} min.</span>`); return; }
+  _autoNextAt = a.running || a.next_in == null ? null : Date.now() + a.next_in * 1000;
+  const disk = a.persistent_disk ? "" : `<span class="auto-warn">⚠ No persistent disk (DATA_DIR not set) — data resets on deploy</span>`;
+  setHTML(el, `<span class="auto-dot on"></span><b>Automation on</b> · every ${Math.round(a.interval / 60)} min · <span id="autoNext">${a.running ? "running now…" : ""}</span><span class="sub">${esc(_lastRunText(a.last))}</span>${disk}`);
+  tickAutomation();
+}
+function tickAutomation() {
+  const n = $("#autoNext"); if (!n || _autoNextAt == null) return;
+  const s = Math.max(0, Math.round((_autoNextAt - Date.now()) / 1000));
+  n.textContent = s ? `next run in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "starting…";
+}
+setInterval(tickAutomation, 1000);
+setInterval(loadStats, 30000);   // keep the automation status fresh while idle
 
 // ── Charts ────────────────────────────────────────────────────────────────
 const _charts = {};
@@ -206,7 +243,7 @@ async function openDrawer(id) {
   const screen = hs ? `<h3>Screening verdict (RAG fit-eval)</h3>${scr.tier ? `<div class="sub" style="margin-bottom:8px"><span class="tier ${esc(scr.tier)}">${esc(scr.tier)}</span> ${esc(scr.confidence || "")}</div>` : ""}<div class="kv">${kv("Best path", scr.best_path)}${kv("Backup path", scr.backup_path)}${kv("Key strength", scr.key_strength)}${kv("Red flag", scr.red_flag)}${kv("Flip trigger", scr.flip_trigger)}${kv("Matched cases", scr.matched_cases)}${kv("Note", scr.note)}${kv("Error", scr.error)}</div>${scr.answer ? `<div class="cand-reason" style="white-space:pre-wrap;margin-top:8px">${esc(scr.answer)}</div>` : ""}` : "";
   $("#drawerBody").innerHTML = `<h2>${esc(lead.name || "Lead #" + lead.id)}</h2>
     <div class="sub">${badge(lead.status, lead.stage)}${lead.owner ? ` · AE: <b>${esc(lead.owner)}</b>` : ""}${lead.channel ? ` · ${esc(lead.channel)}` : ""}</div>
-    ${screen}<h3>Raw input</h3><div class="kv">${kv("Company", lead.company)}${kv("Email", lead.email)}${kv("Phone", lead.phone)}${kv("LinkedIn", lead.li_optout ? "Lead says they don't have one (LinkedIn search skipped, not screened)" : lead.linkedin)}${kv("Link given", lead.other_link)}${kv("Visa", lead.visa)}${kv("Message", lead.message)}</div>
+    ${screen}<h3>Raw input</h3><div class="kv">${kv("Company", lead.company)}${kv("Email", lead.email)}${kv("Phone", lead.phone)}${kv("LinkedIn", lead.li_optout ? "Lead says they don't have one (LinkedIn search skipped, not screened)" : lead.linkedin)}${kv("Link given", lead.other_link)}${lead.link_raw && lead.link_raw !== lead.linkedin && lead.link_raw !== lead.other_link ? kv("Typed as", lead.link_raw) : ""}${kv("Visa", lead.visa)}${kv("Message", lead.message)}</div>
     ${ex.location || ex.role_guess || ex.school || ex.notes ? `<h3>Extracted &amp; enriched</h3><div class="kv">${kv("Company", ex.company)}${kv("School", ex.school)}${kv("Location", ex.location)}${kv("Role guess", ex.role_guess)}${kv("Notes", ex.notes)}</div>${(ex.keywords || []).length ? `<div class="tags" style="margin-top:8px">${ex.keywords.map((k) => `<span class="tag">${esc(k)}</span>`).join("")}</div>` : ""}` : ""}
     ${lead.queries ? `<h3>Search queries</h3><div class="tags">${lead.queries.map((q) => `<span class="tag">${esc(q)}</span>`).join("")}</div>` : ""}
     ${lead.error ? `<h3>Error</h3><div class="cand-reason" style="color:var(--bad)">${esc(lead.error)}</div>` : ""}

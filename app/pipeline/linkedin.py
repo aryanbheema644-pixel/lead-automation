@@ -8,10 +8,45 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import unquote
 
 import httpx
 
 from .. import config
+
+# First path segments that are real LinkedIn sections; anything else right after
+# the domain ("linkedin.com/fabiancs") is a profile slug missing its "/in/".
+_LI_SECTIONS = {"in", "company", "school", "pub", "feed", "posts", "jobs", "groups",
+                "showcase", "events", "pulse", "learning", "sales", "talent"}
+# Also tolerates the common "linkedln" typo.
+_LI_HOST_RE = re.compile(r"linked[il1]n\.com(/[^\s?#,;\"'<>)\]]*)?", re.I)
+
+
+def canonical_linkedin(url: str) -> str:
+    """Normalize any LinkedIn URL to https://www.linkedin.com/in/<slug>.
+
+    Fixes missing scheme/www, country subdomains (pe., bo.), a missing "/in/",
+    query strings (?utm_…, ?trk=…), trailing segments (/en, /details/…), and
+    percent-encoding. Returns '' when there is no profile path (e.g.
+    a bare "linkedin.com"); non-LinkedIn URLs are returned unchanged.
+    """
+    m = _LI_HOST_RE.search(url or "")
+    if not m:
+        return url
+    parts = [p for p in unquote(m.group(1) or "").split("/") if p]
+    if parts and parts[0].lower() in ("m", "mwlite"):      # mobile prefixes
+        parts = parts[1:]
+    if not parts:
+        return ""
+    if parts[0].lower() not in _LI_SECTIONS:
+        parts = ["in", parts[0]]
+    if parts[0].lower() == "in":
+        if len(parts) < 2:
+            return ""
+        # Keep case: vanity slugs are case-insensitive anyway, but internal ids
+        # the search actor can return (/in/ACoAA…) are not.
+        parts = ["in", parts[1]]
+    return "https://www.linkedin.com/" + "/".join(parts)
 
 
 def _slugify_school(name: str) -> str:

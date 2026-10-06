@@ -97,6 +97,9 @@ MAP_SYS = (
     "- visa: the visa type the lead is interested in (e.g. 'O1 Visa', 'EB-2 NIW', "
     "'EB-1'), if such a column exists.\n"
     "- date: the date the lead came in / was created, if such a column exists.\n"
+    "- channel: the marketing channel / lead source the lead came from (values "
+    "like 'Meta', 'Meta Ads', 'Facebook', 'WhatsApp', 'Website', 'Google Ads'), "
+    "if such a column exists. NOT a form name, campaign name or page URL.\n"
     "RULES:\n"
     "1. Set has_header true only if row 0 holds column LABELS (no real data "
     "values); otherwise false (row 0 is already data).\n"
@@ -120,7 +123,7 @@ MAP_SYS = (
 MAP_SCHEMA = (
     '{"has_header": bool, "name": int|[int,...]|null, "company": int|null, '
     '"email": int|null, "phone": int|null, "linkedin": int|null, "message": int|null, '
-    '"visa": int|null, "date": int|null}'
+    '"visa": int|null, "date": int|null, "channel": int|null}'
 )
 
 
@@ -132,6 +135,48 @@ def map_columns(sample_rows: list[list[str]]) -> dict:
     )
     out = chat_json(MAP_SYS, user, max_tokens=300)
     return out if isinstance(out, dict) else {}
+
+
+# ── Step 1b: repair the profile-link cells at ingest ─────────────────────
+LINKS_SYS = (
+    "You repair profile links that people typed into a lead form. Each item is "
+    "the raw text of one lead's profile-link field (the column is usually labelled "
+    "LinkedIn, but people put any profile there). For each item return the "
+    "corrected full URL, or an empty string.\n"
+    "FIX (only when the intended URL is clear):\n"
+    "- missing scheme/www, stray spaces or text around the URL "
+    "('http://www LinkedIn.com/in/x', 'Check my profile: linkedin.com/in/x');\n"
+    "- domain typos ('linkedln.com', 'linkdin.com', 'instagram.co', 'instgram.com', "
+    "'facebok.com', 'youtube.co');\n"
+    "- a handle whose platform is stated explicitly ('@jane (Instagram)', "
+    "'Instagram @jane', 'IG: jane', 'twitter @jane') -> that platform's profile URL;\n"
+    "- a LinkedIn link missing '/in/' ('linkedin.com/jane') -> linkedin.com/in/jane.\n"
+    "RETURN EMPTY STRING when there is no clear link: 'no', 'na', 'n/a', 'null', "
+    "'don't have one', a plain name, an email address, a job title, a sentence, "
+    "random characters, or a bare handle with NO platform stated ('janedoe', "
+    "'@jane'). Never guess a platform and never invent a URL.\n"
+    "Respond ONLY with a JSON object."
+)
+
+
+def clean_links(cells: list[str]) -> dict[int, str]:
+    """Repair a batch of raw profile-link cells in one call.
+    Returns {index: url_or_empty}; indices the model skipped are absent."""
+    if not cells:
+        return {}
+    items = [{"i": i, "text": t[:300]} for i, t in enumerate(cells)]
+    user = (
+        f"Items:\n{json.dumps(items, ensure_ascii=False)}\n\n"
+        'Return JSON: {"links": [{"i": int, "url": str}]} with one entry per item.'
+    )
+    out = chat_json(LINKS_SYS, user, max_tokens=60 * len(cells) + 200)
+    result = {}
+    for it in (out.get("links") if isinstance(out, dict) else None) or []:
+        try:
+            result[int(it["i"])] = str(it.get("url") or "").strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+    return result
 
 
 # ── Step 2: extract & normalize ──────────────────────────────────────────

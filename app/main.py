@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
+import os
 import re
+import time
 import threading
 from datetime import datetime, timezone
 
@@ -13,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, db, sheets
 from .pipeline import distribution, llm, orchestrator
+from .pipeline.linkedin import canonical_linkedin
+from .pipeline.urls import canonical_url
 
 app = FastAPI(title="LeadSearch")
 STATIC_DIR = config.ROOT / "app" / "static"
@@ -21,44 +27,117 @@ STATIC_DIR = config.ROOT / "app" / "static"
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    # A restart/deploy can cut a lead off mid-pipeline; put it back in the queue.
+    requeued = db.requeue_interrupted()
+    # Resume reviewer-triggered re-screens a restart cut off.
+    for l in db.list_leads():
+        if (l.get("screening") or {}).get("note") == "Screening this LinkedIn profile…":
+            orchestrator.start_rescreen(l["id"])
+    if requeued and config.SCHEDULER_ENABLED:
+        orchestrator.start_worker()
     _start_scheduler()
 
 
-# ── Auto-ingest scheduler ─────────────────────────────────────────────────
+# ── Automation ────────────────────────────────────────────────────────────
+# Every SCHEDULER_INTERVAL_SECONDS: pull new leads -> process them -> push to the
+# destination sheet. A manual Push runs a cycle right away and the countdown
+# restarts from there. The next-run time is stored in the DB, so a restart or
+# deploy keeps the schedule instead of resetting it.
 _scheduler_thread = None
 _scheduler_stop = threading.Event()
+_wake = threading.Event()            # set by a manual Push -> run a cycle now
+_cycle_lock = threading.Lock()       # one pull/process/push cycle at a time
+_sync_lock = threading.Lock()        # one sheet sync at a time (manual or auto)
 
 
-def _scheduler_cycle() -> None:
-    """One automation tick: pull new leads, run the pipeline, push finished ones."""
-    if config.GOOGLE_SOURCE_SHEET_ID:
+def _set_next_run(at: float) -> None:
+    db.meta_set("sched_next_run", str(at))
+
+
+def _next_run() -> float:
+    try:
+        return float(db.meta_get("sched_next_run", "0"))
+    except ValueError:
+        return 0.0
+
+
+def _run_cycle(trigger: str) -> dict:
+    """One automation cycle. Never raises; the outcome is recorded for the UI."""
+    result: dict = {"trigger": trigger, "started": time.time()}
+    with _cycle_lock:
+        db.meta_set("sched_running", "1")
         try:
-            _pull_new(limit=config.SCHEDULER_MAX_PER_CYCLE)
-        except Exception:  # noqa: BLE001 — never let the loop die
-            pass
-    orchestrator.start_worker()
-    if config.GOOGLE_DEST_SHEET_ID:
-        try:
-            _push_unpushed()
-        except Exception:  # noqa: BLE001
-            pass
+            if config.GOOGLE_SOURCE_SHEET_ID:
+                if db.count_seen() == 0:
+                    # Fresh database: never process the backlog. Mark everything
+                    # currently in the sheet as seen; only later leads get processed.
+                    result["baselined"] = _baseline()["baselined"]
+                else:
+                    result["pulled"] = _pull_new(limit=config.SCHEDULER_MAX_PER_CYCLE)["inserted"]
+            # Process everything queued, and wait for it, so this cycle pushes
+            # its own results instead of the next one.
+            orchestrator.start_worker()
+            while orchestrator.is_running() and not _scheduler_stop.is_set():
+                time.sleep(1)
+            if config.GOOGLE_DEST_SHEET_ID:
+                pushed = _locked_sync()
+                result.update(added=pushed["added"], updated=pushed["updated"],
+                              in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
+        except Exception as e:  # noqa: BLE001 — never let the loop die; show it instead
+            result["error"] = str(e)[:300]
+        finally:
+            result["finished"] = time.time()
+            db.meta_set("sched_last_run", json.dumps(result))
+            db.meta_set("sched_running", "0")
+            _set_next_run(time.time() + config.SCHEDULER_INTERVAL_SECONDS)
+    return result
 
 
 def _scheduler_loop() -> None:
-    while not _scheduler_stop.wait(config.SCHEDULER_INTERVAL_SECONDS):
-        _scheduler_cycle()
+    if _next_run() <= 0:
+        _set_next_run(time.time() + 60)        # first ever start: first cycle in a minute
+    while not _scheduler_stop.is_set():
+        woke = _wake.wait(max(0.0, _next_run() - time.time()))
+        _wake.clear()
+        if _scheduler_stop.is_set():
+            break
+        _run_cycle("manual" if woke else "scheduled")
 
 
 def _start_scheduler() -> None:
     global _scheduler_thread
     if config.SCHEDULER_ENABLED and _scheduler_thread is None:
+        db.meta_set("sched_running", "0")      # a restart ends any cycle in flight
         _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
         _scheduler_thread.start()
 
 
+def _locked_sync() -> dict:
+    with _sync_lock:
+        return _sync_dest()
+
+
+def _automation_status() -> dict:
+    try:
+        last = json.loads(db.meta_get("sched_last_run", "") or "null")
+    except json.JSONDecodeError:
+        last = None
+    nxt = _next_run()
+    return {
+        "enabled": config.SCHEDULER_ENABLED,
+        "interval": config.SCHEDULER_INTERVAL_SECONDS,
+        "max_per_cycle": config.SCHEDULER_MAX_PER_CYCLE,
+        "running": db.meta_get("sched_running") == "1",
+        "next_in": max(0, round(nxt - time.time())) if config.SCHEDULER_ENABLED and nxt else None,
+        "last": last,
+        "seen": db.count_seen(),
+        "persistent_disk": bool(os.getenv("DATA_DIR")),
+    }
+
+
 # A LinkedIn URL, tolerant of distortions: optional scheme, any/garbled subdomain
 # (www / w / ww / in / uk / none), embedded in surrounding text.
-_LINKEDIN_RE = re.compile(r"(?:https?://)?[a-z0-9.\-]*linkedin\.com/[^\s,;\"'>)\]]+", re.I)
+_LINKEDIN_RE = re.compile(r"(?:https?://)?[a-z0-9.\-]*linked[il1]n\.com/[^\s,;\"'>)\]]+", re.I)
 # Any other URL (http(s):// or www.), used to spot a non-LinkedIn link.
 _ANY_URL_RE = re.compile(r"(?:https?://|www\.)[^\s,;\"'>)\]]+", re.I)
 _TRIM = ".,;)]'\""
@@ -72,24 +151,19 @@ _LI_OPTOUT = (
 
 
 def _normalize_linkedin(text: str) -> str:
-    """Extract and canonicalize a LinkedIn URL from messy text; '' if none.
-    Fixes scheme/subdomain distortions -> https://www.linkedin.com/<path>."""
+    """Extract a LinkedIn URL from messy text and canonicalize it to
+    https://www.linkedin.com/in/<slug>; '' if none (or no profile path)."""
     m = _LINKEDIN_RE.search(text or "")
     if not m:
         return ""
-    frag = m.group(0).rstrip(_TRIM)
-    i = frag.lower().find("linkedin.com")
-    path = frag[i + len("linkedin.com"):]
-    if not path.startswith("/"):
-        path = "/" + path
-    return "https://www.linkedin.com" + path
+    return canonical_linkedin(m.group(0).rstrip(_TRIM))
 
 
 def _first_other_url(text: str) -> str:
     """A non-LinkedIn URL in the text, normalized with a scheme; '' if none."""
     for m in _ANY_URL_RE.finditer(text or ""):
         u = m.group(0).rstrip(_TRIM)
-        if "linkedin.com" in u.lower():
+        if re.search(r"linked[il1]n\.com", u, re.I):
             continue
         return u if u.lower().startswith("http") else "https://" + u
     return ""
@@ -117,13 +191,14 @@ def classify_linkedin(li_cell: str, message: str) -> dict:
 
 
 def _channel_from_tab(title: str) -> str:
-    """Normalize a source tab title into a channel label for analytics."""
-    t = (title or "").lower()
-    if "website" in t:
+    """Normalize a source tab title (or a per-row channel/source cell) into a
+    channel label for analytics."""
+    t = (title or "").lower().strip()
+    if "website" in t or t in ("web", "site") or "contact form" in t:
         return "Website"
-    if "meta" in t:
+    if "meta" in t or "facebook" in t or "instagram" in t or t in ("fb", "ig"):
         return "Meta"
-    if "chatbot" in t or "whatsapp" in t or t.strip().startswith("wa "):
+    if "chatbot" in t or "whatsapp" in t or t == "wa" or t.startswith("wa "):
         return "WhatsApp"
     if "google" in t:
         return "Google Ads"
@@ -134,15 +209,60 @@ def _channel_from_tab(title: str) -> str:
     return title or "Other"
 
 
-def _insert_row(val, channel: str = "") -> bool:
+# Visa interest -> standard form. Most specific first; a letter suffix (O1A,
+# EB1A) is kept only when the lead actually wrote it.
+_L, _R = r"(?<![a-z])", r"(?![a-z])"      # not inside a longer word
+_SEP = r"[\s_-]*"
+_VISA_RULES = [
+    (rf"niw", "EB2 NIW"),
+    (rf"{_L}eb{_SEP}1{_SEP}a{_R}", "EB1A"),
+    (rf"{_L}eb{_SEP}1", "EB1"),
+    (rf"{_L}eb{_SEP}2", "EB2"),
+    (rf"{_L}eb{_SEP}3", "EB3"),
+    (rf"{_L}h{_SEP}1{_SEP}b", "H1B"),
+    (rf"{_L}o{_SEP}1{_SEP}a{_R}", "O1A"),
+    (rf"{_L}o{_SEP}1{_SEP}b{_R}", "O1B"),
+    (rf"{_L}o{_SEP}1", "O1"),
+    (rf"{_L}l{_SEP}1(?![a-z0-9])", "L1"),
+    (rf"{_L}e{_SEP}2(?![a-z0-9])", "E2"),
+]
+
+
+def normalize_visa(text: str) -> str:
+    """'O1 Visa' / 'O-1' / 'o1' -> 'O1'; 'o-1a_' -> 'O1A'; 'eb-2_niw' /
+    'EB-2 NIW Green Card' -> 'EB2 NIW'; 'eb-1a' -> 'EB1A'; 'H1-B Visa' -> 'H1B'.
+    "Not sure (yet)" defaults to 'O1'. Anything unrecognized is kept as typed."""
+    raw = (text or "").strip()
+    t = raw.lower()
+    if not t or "linkedin.com" in t or "http" in t or "www." in t:
+        return raw
+    if re.search(r"not[\s_-]*sure", t):
+        return "O1"
+    for pat, code in _VISA_RULES:
+        if re.search(pat, t):
+            return code
+    return raw
+
+
+# Channel -> value for the destination sheet's "Source" column.
+_SOURCE_LABEL = {"Meta": "Meta Ads", "WhatsApp": "WhatsApp", "Website": "Website",
+                 "Google Ads": "Google Ads", "Referral": "Referral", "LinkedIn": "LinkedIn"}
+
+
+def _insert_row(val, channel: str = "", link: str = "") -> bool:
+    """Insert one mapped row. `link` is the LLM-repaired profile link, if any;
+    otherwise the raw cell is used (deterministic parsing still applies)."""
     if not any(val(k) for k in ("name", "company", "email", "phone", "message")):
         return False
-    info = classify_linkedin(val("linkedin"), val("message"))
+    raw_link = val("linkedin")
+    info = classify_linkedin(link or raw_link, val("message"))
+    row_channel = val("channel")
     lead_id = db.insert_lead(
         val("name"), val("company"), val("email"), val("phone"), val("message"),
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
-        other_link=info["other_url"],
-        visa=val("visa"), lead_date=val("date"), channel=channel,
+        other_link=canonical_url(info["other_url"]) or info["other_url"],
+        link_raw=raw_link, visa=normalize_visa(val("visa")), lead_date=val("date"),
+        channel=_channel_from_tab(row_channel) if row_channel else channel,
     )
     # Every lead stays 'queued'; process_lead routes it:
     #  - provided LinkedIn -> fast path: scrape + screen that URL, no search.
@@ -166,13 +286,40 @@ def _indices(mapping: dict, key: str) -> list[int]:
     return out
 
 
-def _dedup_key(name: str, email: str, phone: str) -> str:
-    """Stable per-lead key for dedup: email if present, else name|phone."""
+def _dedup_keys(name: str, email: str, phone: str) -> tuple[str, str]:
+    """(key, legacy_key) identifying a lead across pulls.
+
+    key: the email; else the phone digits; else the name. Phone beats name
+    because a name can map differently between pulls (one column vs first+last),
+    a phone can't. legacy_key is the older "name|digits" form, still checked so
+    rows seen before this change aren't treated as new. '' if no identity."""
     email = (email or "").strip().lower()
+    digits = re.sub(r"[^0-9]", "", phone or "")
+    nm = " ".join((name or "").lower().split())
+    legacy = email or (f"{nm}|{digits}" if (nm or digits) else "")
     if email:
-        return email
-    np = f"{(name or '').strip().lower()}|{re.sub(r'[^0-9]', '', phone or '')}"
-    return np if np != "|" else ""
+        return email, legacy
+    if len(digits) >= 7:
+        return f"tel:{digits}", legacy
+    return (f"name:{nm}" if nm else ""), legacy
+
+
+def _map_columns(rows: list[list[str]]) -> dict:
+    """LLM column mapping, cached per header row: the same tab layout maps the
+    same way every pull (stable dedup keys) and costs no LLM call after the first."""
+    header = [(c or "").strip() for c in rows[0]]
+    ck = "map:" + hashlib.sha1(json.dumps(header).encode()).hexdigest()
+    cached = db.meta_get(ck)
+    if cached:
+        try:
+            return json.loads(cached)
+        except json.JSONDecodeError:
+            pass
+    mapping = llm.map_columns(rows[:5])
+    # Only cache a confident mapping of a real header row.
+    if mapping.get("has_header") and (_indices(mapping, "email") or _indices(mapping, "name")):
+        db.meta_set(ck, json.dumps(mapping))
+    return mapping
 
 
 def _ingest_rows(rows: list[list[str]], dedup: bool = False,
@@ -184,29 +331,57 @@ def _ingest_rows(rows: list[list[str]], dedup: bool = False,
     if not rows:
         return 0, {}
     try:
-        mapping = llm.map_columns(rows[:5])
+        mapping = _map_columns(rows)
     except llm.LLMError as e:
         raise HTTPException(400, f"Could not map columns (LLM): {e}")
     data_rows = rows[1:] if mapping.get("has_header") else rows
     seen = db.seen_keys() if dedup else set()
-    count, new_keys = 0, []
+
+    # Pick the rows to insert first, so the link repair runs only on those.
+    picked = []
     for row in data_rows:
         def val(key: str, _row=row) -> str:
             cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
             return " ".join(c for c in cells if c).strip()
-        key = _dedup_key(val("name"), val("email"), val("phone"))
-        if dedup and key and key in seen:
+        key, legacy = _dedup_keys(val("name"), val("email"), val("phone"))
+        if not key:
+            continue            # no name, email or phone: nothing to identify or process
+        if dedup and (key in seen or legacy in seen):
             continue
-        if _insert_row(val, channel=channel):
+        seen.add(key)
+        picked.append((val, key))
+        if limit and len(picked) >= limit:
+            break
+
+    links = _repair_links([val("linkedin") for val, _ in picked])
+    count, new_keys = 0, []
+    for i, (val, key) in enumerate(picked):
+        if _insert_row(val, channel=channel, link=links.get(i, "")):
             count += 1
-            if key:
-                seen.add(key)
-                new_keys.append(key)
-            if limit and count >= limit:
-                break
+            new_keys.append(key)
     if new_keys:
         db.mark_seen(new_keys)
     return count, mapping
+
+
+def _repair_links(cells: list[str], batch: int = 40) -> dict[int, str]:
+    """LLM-repair the profile-link cells that aren't already clean URLs
+    (typos, '@x (Instagram)', missing /in/, spaces…). Returns {index: url} for
+    cells it fixed. Best-effort: if the LLM fails, raw cells are used as-is."""
+    todo = [(i, c) for i, c in enumerate(cells) if c and canonical_url(c) != c]
+    fixed: dict[int, str] = {}
+    for start in range(0, len(todo), batch):
+        chunk = todo[start:start + batch]
+        try:
+            out = llm.clean_links([c for _, c in chunk])
+        except llm.LLMError:
+            continue
+        for j, url in out.items():
+            if 0 <= j < len(chunk) and url:
+                clean = canonical_url(url)
+                if clean:
+                    fixed[chunk[j][0]] = clean
+    return fixed
 
 
 def _row_keys(rows: list[list[str]]) -> list[str]:
@@ -215,7 +390,7 @@ def _row_keys(rows: list[list[str]]) -> list[str]:
     if not rows:
         return []
     try:
-        mapping = llm.map_columns(rows[:5])
+        mapping = _map_columns(rows)
     except llm.LLMError:
         return []
     data_rows = rows[1:] if mapping.get("has_header") else rows
@@ -224,7 +399,7 @@ def _row_keys(rows: list[list[str]]) -> list[str]:
         def val(key: str, _row=row) -> str:
             cells = [_row[i].strip() for i in _indices(mapping, key) if 0 <= i < len(_row)]
             return " ".join(c for c in cells if c).strip()
-        k = _dedup_key(val("name"), val("email"), val("phone"))
+        k, _ = _dedup_keys(val("name"), val("email"), val("phone"))
         if k:
             keys.append(k)
     return keys
@@ -248,14 +423,37 @@ async def upload(file: UploadFile) -> JSONResponse:
                          "header_detected": bool(mapping.get("has_header"))})
 
 
-# Destination-sheet columns — matches the "Master Leads Sheet Cleaned" format
-# (trailing spaces kept to mirror the sheet's own headers, used only if empty).
-_DEST_HEADER = ["Name ", "Email", "Number", "Linkedin Profile URL",
-                "Visa intrested in", "Message", "Date of lead", "Company",
-                "Designation ", "Owner (AE)", "Qualification Status"]
+# Destination-sheet columns, matched to the sheet BY HEADER NAME (case/space
+# insensitive), so people can reorder or add columns without breaking the sync.
+# (normalized key, header text used only when the sheet is completely empty)
+_DEST_COLS = [
+    ("name", "Name "), ("email", "Email"), ("number", "Number"),
+    ("linkedin profile url", "Linkedin Profile URL"),
+    ("visa intrested in", "Visa intrested in"), ("message", "Message"),
+    ("date of lead", "Date of lead"), ("company", "Company"),
+    ("designation", "Designation "), ("owner (ae) id", "Owner (AE) Id"),
+    ("owner name", "Owner Name "), ("qualification status", "Qualification Status"),
+    ("source", "Source "),
+]
+# Pipedrive creates a deal from a row once "Source" is set, so Source is only
+# ever written as part of a complete new row — never on its own, never later.
+_SOURCE = "source"
 
 
-def _dest_row(l: dict) -> list:
+def _hkey(header: str) -> str:
+    return " ".join((header or "").lower().split())
+
+
+def _owner_info(owner: str) -> tuple[str, str]:
+    """AE name (as assigned) -> (Pipedrive owner id, full name); id '' if unknown."""
+    words = (owner or "").split()
+    if not words:
+        return "", ""
+    return config.AE_DIRECTORY.get(owner.strip().lower()) or \
+        config.AE_DIRECTORY.get(words[0].lower()) or ("", owner)
+
+
+def _dest_fields(l: dict) -> dict[str, str]:
     chosen = l.get("chosen") or {}
     person = chosen.get("person") or {}
     ex = l.get("extracted") or {}
@@ -264,19 +462,36 @@ def _dest_row(l: dict) -> list:
     qual = tier or l.get("status", "")
     if tier and s.get("best_path"):
         qual = f"{tier} · {s.get('best_path')}"
-    return [
-        person.get("name") or l.get("name", ""),                # Name
-        l.get("email", ""),                                     # Email
-        l.get("phone", ""),                                     # Number
-        chosen.get("url", ""),                                  # Linkedin Profile URL
-        l.get("visa", ""),                                      # Visa intrested in
-        l.get("message", ""),                                   # Message
-        l.get("lead_date", ""),                                 # Date of lead
-        person.get("company") or ex.get("company", ""),         # Company
-        person.get("role") or ex.get("role_guess", ""),         # Designation
-        l.get("owner", ""),                                     # Owner (AE)
-        qual,                                                   # Qualification Status
-    ]
+    url = chosen.get("url", "") or ""
+    owner_id, owner_name = _owner_info(l.get("owner", ""))
+    f = {
+        "name": person.get("name") or l.get("name", ""),
+        "email": l.get("email", ""),
+        "number": l.get("phone", ""),
+        "linkedin profile url": canonical_url(url) or url,
+        "visa intrested in": normalize_visa(l.get("visa", "")),
+        "message": l.get("message", ""),
+        "date of lead": l.get("lead_date", ""),
+        "company": person.get("company") or ex.get("company", ""),
+        "designation": person.get("role") or ex.get("role_guess", ""),
+        "owner (ae) id": owner_id,
+        "owner name": owner_name,
+        "qualification status": qual,
+        _SOURCE: _SOURCE_LABEL.get(l.get("channel") or "", ""),
+    }
+    return {k: str(v or "").strip() for k, v in f.items()}
+
+
+def _missing(f: dict[str, str]) -> list[str]:
+    """What a row lacks to become a usable Pipedrive deal (empty = complete)."""
+    miss = []
+    if not f["name"]:
+        miss.append("name")
+    if not (f["email"] or f["number"]):
+        miss.append("email/number")
+    if not f["owner (ae) id"]:
+        miss.append("owner id")
+    return miss
 
 
 def _pull_new(limit: int | None = None) -> dict:
@@ -302,10 +517,23 @@ def sheets_pull() -> JSONResponse:
         raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
     if not config.GOOGLE_SOURCE_SHEET_ID:
         raise HTTPException(400, "No source sheet configured (GOOGLE_SOURCE_SHEET_ID).")
+    if not _cycle_lock.acquire(blocking=False):
+        raise HTTPException(409, "An automation cycle is running — it pulls new leads itself.")
     try:
         return JSONResponse(_pull_new())
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
+    finally:
+        _cycle_lock.release()
+
+
+def _baseline() -> dict:
+    """Mark every current source row as seen without processing it."""
+    keys = []
+    for _title, rows in sheets.read_source_tabs():
+        keys.extend(_row_keys(rows))
+    db.mark_seen(keys)
+    return {"baselined": len(keys), "total_seen": db.count_seen()}
 
 
 @app.post("/api/sheets/baseline")
@@ -316,46 +544,147 @@ def sheets_baseline() -> JSONResponse:
         raise HTTPException(400, "Google service account not configured.")
     if not config.GOOGLE_SOURCE_SHEET_ID:
         raise HTTPException(400, "No source sheet configured.")
+    if not _cycle_lock.acquire(blocking=False):
+        raise HTTPException(409, "An automation cycle is running — try again in a moment.")
     try:
-        tabs = sheets.read_source_tabs()
+        return JSONResponse(_baseline())
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
-    keys = []
-    for _title, rows in tabs:
-        keys.extend(_row_keys(rows))
-    db.mark_seen(keys)
-    return JSONResponse({"baselined": len(keys), "total_seen": db.count_seen()})
+    finally:
+        _cycle_lock.release()
 
 
-def _push_unpushed() -> int:
-    """Assign owners and write all processed, not-yet-pushed leads to the dest sheet."""
-    done = {"accepted", "review", "rejected"}
-    leads = [l for l in db.list_leads()
-             if l.get("status") in done and not l.get("pushed")]
-    if not leads:
-        return 0
+# Only decided leads go to the sheet; 'review' waits for a human decision.
+_PUSHABLE = {"accepted", "rejected"}
+
+
+def _find_dest_row(values: list[list[str]], cols: dict[str, int],
+                   hint: int | None, snap: dict[str, str]) -> int | None:
+    """Locate the sheet row (1-based) holding a lead, given what we last wrote
+    there. Rows shift when people delete/insert/sort, so the stored row number is
+    only a hint: verify it, else scan by email (or name + number if no email)."""
+    email = snap.get("email", "").lower()
+    name = snap.get("name", "").lower()
+    phone = snap.get("number", "")
+
+    def cell(row, key):
+        i = cols.get(key)
+        return (row[i] if i is not None and i < len(row) else "").strip()
+
+    def same(row):
+        if email:
+            return cell(row, "email").lower() == email
+        return bool(name) and cell(row, "name").lower() == name and cell(row, "number") == phone
+
+    if hint and 1 < hint <= len(values) and same(values[hint - 1]):
+        return hint
+    matches = [i + 1 for i, row in enumerate(values) if i > 0 and same(row)]
+    if not matches:
+        return None
+    exact = [r for r in matches if cell(values[r - 1], "name").lower() == name]
+    return (exact or matches)[0]
+
+
+def _sync_dest() -> dict:
+    """Make the destination sheet reflect the decided leads, editing in place.
+
+    - accepted/rejected leads never pushed  -> appended as one complete row
+    - pushed leads whose values changed     -> only the changed cells rewritten
+      (diffed against what we last wrote, so manual edits elsewhere survive)
+    - unchanged                             -> skipped
+    - pushed but row gone from the sheet    -> re-added only if it changed since
+    - review / queued / processing / error  -> not pushed
+    - incomplete (no name, no email+number, or no owner id) -> held back, so
+      Pipedrive never gets an empty deal
+    Source is written only inside a complete appended row, never updated later.
+    """
+    all_leads = db.list_leads()
+    leads = [l for l in all_leads if l.get("status") in _PUSHABLE]
+    out = {"added": 0, "updated": 0, "unchanged": 0, "incomplete": [],
+           "in_review": sum(1 for l in all_leads if l.get("status") == "review")}
+    pending = []
     for l in leads:
         if not l.get("owner"):
             l["owner"] = distribution.assign_owner(l)
             db.update_lead(l["id"], owner=l["owner"])
-    sheets.append_dest_rows(_DEST_HEADER, [_dest_row(l) for l in leads])
-    for l in leads:
-        db.update_lead(l["id"], pushed=1)
-    return len(leads)
+        f = _dest_fields(l)
+        miss = _missing(f)
+        if miss:
+            out["incomplete"].append(f"{f['name'] or 'Lead #' + str(l['id'])} (no {', '.join(miss)})")
+            continue
+        snap = l.get("pushed_row") if isinstance(l.get("pushed_row"), dict) else None
+        if l.get("pushed") and snap == f:
+            out["unchanged"] += 1
+            continue
+        pending.append((l, f, snap))
+    if not pending:
+        return out
+
+    ws, values = sheets.open_dest()
+    if not values:
+        sheets.append_rows(ws, [[h for _, h in _DEST_COLS]])
+        values = [[h for _, h in _DEST_COLS]]
+    cols: dict[str, int] = {}
+    for i, h in enumerate(values[0]):
+        cols.setdefault(_hkey(h), i)
+    absent = [k for k in ("name", "email", "number", _SOURCE) if k not in cols]
+    if absent:
+        raise sheets.SheetsError(f"Destination sheet has no column for: {', '.join(absent)}")
+    width = max(len(values[0]), max(cols.values()) + 1)
+
+    to_add, cells, located = [], [], []
+    for l, f, snap in pending:
+        if not l.get("pushed"):
+            to_add.append((l, f))
+            continue
+        row = _find_dest_row(values, cols, l.get("sheet_row"), snap or f)
+        if row is None:
+            to_add.append((l, f))          # deleted from the sheet but changed since
+            continue
+        # Diff against what we last wrote; for leads pushed before snapshots
+        # existed, against what's in the sheet now.
+        current = values[row - 1] + [""] * width
+        prev = snap or {k: current[i].strip() for k, i in cols.items()}
+        cells += [(row, cols[k] + 1, v) for k, v in f.items()
+                  if k != _SOURCE and k in cols and v != prev.get(k, "")]
+        located.append((l, f, row))
+
+    sheets.write_cells(ws, cells)
+    for l, f, row in located:
+        db.update_lead(l["id"], pushed=1, pushed_row=f, sheet_row=row)
+    out["updated"] = len(located)
+
+    new_rows = []
+    for _, f in to_add:
+        r = [""] * width
+        for k, v in f.items():
+            if k in cols:
+                r[cols[k]] = v
+        new_rows.append(r)
+    rows_at = sheets.append_rows(ws, new_rows)       # one call: whole rows at once
+    for (l, f), row in zip(to_add, rows_at):
+        db.update_lead(l["id"], pushed=1, pushed_row=f, sheet_row=row or None)
+    out["added"] = len(to_add)
+    return out
 
 
 @app.post("/api/sheets/push")
 def sheets_push() -> JSONResponse:
-    """Write refined (processed, not-yet-pushed) leads to the destination sheet."""
+    """Sync decided leads to the destination sheet (add new, edit changed rows)."""
     if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
         raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
     if not config.GOOGLE_DEST_SHEET_ID:
         raise HTTPException(400, "No destination sheet configured (GOOGLE_DEST_SHEET_ID).")
     try:
-        n = _push_unpushed()
+        out = _locked_sync()
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
-    return JSONResponse({"pushed": n} if n else {"pushed": 0, "note": "No new refined leads to push."})
+    # With automation on, a manual Push also runs a full cycle now (pull new
+    # leads, process, push) and the 10-minute countdown restarts after it.
+    if config.SCHEDULER_ENABLED and not _cycle_lock.locked():
+        _wake.set()
+        out["cycle_started"] = True
+    return JSONResponse(out)
 
 
 @app.post("/api/run")
@@ -382,7 +711,7 @@ def status() -> JSONResponse:
             "running": orchestrator.is_running(),
             "current": current,
             "providers": config.provider_status(),
-            "scheduler": config.scheduler_status(),
+            "scheduler": _automation_status(),
         }
     )
 
@@ -415,11 +744,31 @@ def choose(lead_id: int, body: dict) -> JSONResponse:
     if idx < 0 or idx >= len(candidates):
         raise HTTPException(400, "Invalid candidate_index")
     chosen = candidates[idx]
+    old = lead.get("chosen") or {}
+    canon = lambda u: canonical_url(u) or (u or "")
+    fields, rescreen = {"candidates": candidates}, False
+    if canon(chosen.get("url")).rstrip("/").lower() != canon(old.get("url")).rstrip("/").lower():
+        # The verdict belongs to a specific profile. Keep the old one with its
+        # candidate (so switching back restores it for free), then:
+        #   non-LinkedIn          -> no verdict (only LinkedIn can be screened)
+        #   LinkedIn, seen before -> restore its cached verdict
+        #   LinkedIn, never seen  -> screen it in the background
+        orchestrator._cache_on_candidate(candidates, old, lead.get("screening"))
+        if not orchestrator.is_linkedin(chosen.get("url")) or lead.get("li_optout"):
+            fields.update(screening=None, screened=0)
+        elif chosen.get("screening"):
+            fields.update(screening=chosen["screening"], screened=1)
+        else:
+            fields.update(screening={"note": "Screening this LinkedIn profile…"}, screened=0)
+            rescreen = True
     db.update_lead(
         lead_id, status="accepted", chosen=chosen,
         confidence=chosen.get("score", 0.0),
         reasoning=f"Manually selected by reviewer. {chosen.get('reasoning','')}",
+        **fields,
     )
+    if rescreen:
+        orchestrator.start_rescreen(lead_id)
     return JSONResponse({"ok": True})
 
 

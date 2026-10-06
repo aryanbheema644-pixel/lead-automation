@@ -11,6 +11,9 @@ from .config import DB_PATH
 
 _lock = threading.Lock()
 
+# Columns stored as JSON text.
+_JSON_FIELDS = ("extracted", "queries", "candidates", "chosen", "screening", "pushed_row")
+
 
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -30,6 +33,7 @@ _COLUMNS = {
     "linkedin": "TEXT",
     "li_optout": "INTEGER DEFAULT 0",
     "other_link": "TEXT",          # a non-LinkedIn profile link the lead provided
+    "link_raw": "TEXT",            # the profile-link cell exactly as the lead typed it
     "visa": "TEXT",
     "lead_date": "TEXT",
     "message": "TEXT",
@@ -46,6 +50,8 @@ _COLUMNS = {
     "screened": "INTEGER DEFAULT 0",
     "owner": "TEXT",
     "pushed": "INTEGER DEFAULT 0",
+    "pushed_row": "TEXT",          # JSON: the dest-sheet cell values we last wrote
+    "sheet_row": "INTEGER",        # dest-sheet row number we last wrote to (a hint)
     "created_at": "REAL",
     "updated_at": "REAL",
 }
@@ -94,6 +100,25 @@ def count_seen() -> int:
         return int(conn.execute("SELECT COUNT(*) c FROM seen_leads").fetchone()["c"])
 
 
+def meta_get(k: str, default: str = "") -> str:
+    with _conn() as conn:
+        row = conn.execute("SELECT v FROM meta WHERE k = ?", (k,)).fetchone()
+        return row["v"] if row else default
+
+
+def meta_set(k: str, v: str) -> None:
+    with _lock, _conn() as conn:
+        conn.execute("INSERT INTO meta (k, v) VALUES (?, ?) "
+                     "ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
+
+
+def requeue_interrupted() -> int:
+    """Leads left mid-pipeline by a restart/deploy go back to the queue."""
+    with _lock, _conn() as conn:
+        return conn.execute("UPDATE leads SET status = 'queued', stage = NULL "
+                            "WHERE status = 'processing'").rowcount
+
+
 def next_rr(name: str, n: int) -> int:
     """Return the next round-robin index for `name` (0..n-1) and advance it."""
     if n <= 0:
@@ -110,7 +135,7 @@ def next_rr(name: str, n: int) -> int:
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
-    for jf in ("extracted", "queries", "candidates", "chosen", "screening"):
+    for jf in _JSON_FIELDS:
         if d.get(jf):
             try:
                 d[jf] = json.loads(d[jf])
@@ -121,16 +146,16 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def insert_lead(name: str, company: str, email: str, phone: str, message: str,
                 linkedin: str = "", li_optout: int = 0, other_link: str = "",
-                visa: str = "", lead_date: str = "", channel: str = "") -> int:
+                link_raw: str = "", visa: str = "", lead_date: str = "", channel: str = "") -> int:
     now = time.time()
     with _lock, _conn() as conn:
         cur = conn.execute(
             """INSERT INTO leads (name, company, channel, email, phone, linkedin,
-                                  li_optout, other_link, visa, lead_date, message,
-                                  status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                                  li_optout, other_link, link_raw, visa, lead_date,
+                                  message, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
             (name, company, channel, email, phone, linkedin, li_optout, other_link,
-             visa, lead_date, message, now, now),
+             link_raw, visa, lead_date, message, now, now),
         )
         return int(cur.lastrowid)
 
@@ -171,7 +196,7 @@ def analytics() -> dict:
 def update_lead(lead_id: int, **fields: Any) -> None:
     if not fields:
         return
-    for jf in ("extracted", "queries", "candidates", "chosen", "screening"):
+    for jf in _JSON_FIELDS:
         if jf in fields and not isinstance(fields[jf], (str, type(None))):
             fields[jf] = json.dumps(fields[jf], ensure_ascii=False)
     fields["updated_at"] = time.time()

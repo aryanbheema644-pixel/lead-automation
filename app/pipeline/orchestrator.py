@@ -16,6 +16,7 @@ from .fetch import acquire_content
 from .linkedin import fetch_linkedin_raw, search_by_name
 from .profile_view import to_pdf_view
 from .search import linkedin_search, search_many
+from .urls import canonical_url
 
 
 def _person_from_profile(p: dict) -> dict:
@@ -32,27 +33,80 @@ def _person_from_profile(p: dict) -> dict:
     }
 
 
-def _screen_lead(lead_id: int, chosen: dict) -> dict | None:
+def _canon(url: str) -> str:
+    """Canonical form of a profile URL (LinkedIn -> /in/<slug>, tracking stripped)."""
+    return canonical_url(url) or url
+
+
+def is_linkedin(url: str) -> bool:
+    return "linkedin.com" in (url or "").lower()
+
+
+def _screen_lead(lead_id: int, chosen: dict, track: bool = True) -> dict | None:
     """Scrape the chosen LinkedIn profile and run it through the screening console.
     Returns a flat screening summary (or a note dict) and enriches `chosen.person`.
-    Returns None if there's no LinkedIn URL to screen."""
-    url = (chosen or {}).get("url", "")
-    if not url or "linkedin.com" not in url.lower():
+    Returns None if there's no LinkedIn URL to screen. With track=False the
+    lead's status/stage are left alone (used for re-screens of finished leads)."""
+    url = _canon((chosen or {}).get("url", ""))
+    if not is_linkedin(url):
         return None
     if not config.screening_ready():
         return {"note": "screening not configured"}
-    _set_stage(lead_id, "scraping profile")
+    if track:
+        _set_stage(lead_id, "scraping profile")
     raw = fetch_linkedin_raw(url)
     if not raw:
         return {"note": "LinkedIn profile could not be scraped (empty); not screened."}
     profile = to_pdf_view(raw)
     chosen["person"] = _person_from_profile(profile)  # enrich sheet fields from real data
-    _set_stage(lead_id, "screening")
+    if track:
+        _set_stage(lead_id, "screening")
     try:
         result = screening.screen_profile(profile)
     except screening.ScreeningError as e:
         return {"error": f"screening failed: {e}"}
     return screening.summarize(result)
+
+
+def _cache_on_candidate(candidates: list[dict], chosen: dict, summary: dict | None) -> None:
+    """Remember a real verdict (and the scraped person) on the matching candidate,
+    so switching back to this profile later restores it without re-screening.
+    Errors / notes aren't cached, so those get retried."""
+    if not (summary and summary.get("tier")):
+        return
+    url = _canon(chosen.get("url", ""))
+    for c in candidates:
+        if _canon(c.get("url", "")) == url:
+            c["screening"] = summary
+            if chosen.get("person"):
+                c["person"] = chosen["person"]
+
+
+def rescreen(lead_id: int) -> None:
+    """Screen a finished lead's (newly) chosen LinkedIn profile in the background,
+    after a reviewer switched to it. Leaves status/stage alone; the result is
+    dropped if the reviewer switched profiles again in the meantime."""
+    lead = db.get_lead(lead_id)
+    if not lead:
+        return
+    chosen = dict(lead.get("chosen") or {})
+    try:
+        summary = _screen_lead(lead_id, chosen, track=False)
+    except Exception as e:  # noqa: BLE001
+        summary = {"error": f"screening failed: {e}"}
+    latest = db.get_lead(lead_id)
+    if not latest:
+        return
+    candidates = latest.get("candidates") or []
+    _cache_on_candidate(candidates, chosen, summary)
+    fields = {"candidates": candidates}
+    if _canon((latest.get("chosen") or {}).get("url", "")) == _canon(chosen.get("url", "")):
+        fields.update(chosen=chosen, screening=summary, screened=1 if summary else 0)
+    db.update_lead(lead_id, **fields)
+
+
+def start_rescreen(lead_id: int) -> None:
+    threading.Thread(target=rescreen, args=(lead_id,), daemon=True).start()
 
 # One worker at a time keeps rate limits and cost predictable.
 _worker_lock = threading.Lock()
@@ -70,17 +124,19 @@ def process_lead(lead_id: int) -> None:
     try:
         # Fast path: the lead already provided a LinkedIn URL -> no refinement
         # (no search/discovery). Go straight to screening on that URL.
-        provided = (lead.get("linkedin") or "").strip()
-        if provided.startswith("http") and "linkedin.com" in provided.lower():
+        provided = _canon((lead.get("linkedin") or "").strip())
+        if provided.startswith("http") and is_linkedin(provided):
             chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
             screen_summary = _screen_lead(lead_id, chosen)
             owner = distribution.assign_owner({
                 "phone": lead.get("phone"), "message": lead.get("message"),
                 "visa": lead.get("visa"), "extracted": {}, "chosen": chosen})
+            candidates = [{"url": provided, "source_type": "linkedin (provided)",
+                           "score": None, "signals": {}, "person": chosen.get("person", {})}]
+            _cache_on_candidate(candidates, chosen, screen_summary)
             db.update_lead(
                 lead_id, status="accepted", stage="done", confidence=None,
-                candidates=[{"url": provided, "source_type": "linkedin (provided)",
-                             "score": None, "signals": {}, "person": chosen.get("person", {})}],
+                candidates=candidates,
                 chosen=chosen, screening=screen_summary, screened=1, owner=owner,
                 reasoning="LinkedIn URL provided by the lead — no refinement needed.",
                 error=None,
@@ -143,7 +199,7 @@ def process_lead(lead_id: int) -> None:
         # Apify search (reliable, has data) > Tavily-found LinkedIn.
         seen, li_ordered = set(), []
         for r in lane_li + gen_li:
-            key = r["url"].rstrip("/").lower()
+            key = _canon(r["url"]).rstrip("/").lower()
             if key not in seen:
                 seen.add(key)
                 li_ordered.append(r)
@@ -168,7 +224,7 @@ def process_lead(lead_id: int) -> None:
             person = match.get("person", {}) if isinstance(match, dict) else {}
             candidates.append(
                 {
-                    "url": res["url"],
+                    "url": _canon(res["url"]),
                     "title": res["title"],
                     "snippet": res.get("snippet", ""),
                     "source_type": res["source_type"],
@@ -209,6 +265,8 @@ def process_lead(lead_id: int) -> None:
         # and leads who said they have no LinkedIn are never screened.
         screen_summary = (_screen_lead(lead_id, chosen)
                           if chosen and not lead.get("li_optout") else None)
+        if chosen:
+            _cache_on_candidate(candidates, chosen, screen_summary)
 
         # Step 10 — assign the AE (Owner) per the distribution rules
         owner = distribution.assign_owner({
