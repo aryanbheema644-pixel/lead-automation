@@ -40,12 +40,12 @@ def _startup() -> None:
 
 # ── Automation ────────────────────────────────────────────────────────────
 # Every SCHEDULER_INTERVAL_SECONDS: pull new leads -> process them -> push to the
-# destination sheet. A manual Push runs a cycle right away and the countdown
-# restarts from there. The next-run time is stored in the DB, so a restart or
-# deploy keeps the schedule instead of resetting it.
+# destination sheet. Pull and push can each be paused independently; while push
+# is playing the manual Push button is disabled (cycles already push). The
+# next-run time and pause states live in the DB, so restarts keep them.
 _scheduler_thread = None
 _scheduler_stop = threading.Event()
-_wake = threading.Event()            # set by a manual Push -> run a cycle now
+_wake = threading.Event()            # set on resume -> run a cycle now
 _cycle_lock = threading.Lock()       # one pull/process/push cycle at a time
 _sync_lock = threading.Lock()        # one sheet sync at a time (manual or auto)
 
@@ -67,7 +67,7 @@ def _run_cycle(trigger: str) -> dict:
     with _cycle_lock:
         db.meta_set("sched_running", "1")
         try:
-            if config.GOOGLE_SOURCE_SHEET_ID:
+            if config.GOOGLE_SOURCE_SHEET_ID and not _paused():
                 if db.count_seen() == 0:
                     # Fresh database: never process the backlog. Mark everything
                     # currently in the sheet as seen; only later leads get processed.
@@ -79,7 +79,7 @@ def _run_cycle(trigger: str) -> dict:
             orchestrator.start_worker()
             while orchestrator.is_running() and not _scheduler_stop.is_set():
                 time.sleep(1)
-            if config.GOOGLE_DEST_SHEET_ID:
+            if config.GOOGLE_DEST_SHEET_ID and not _push_paused():
                 pushed = _locked_sync()
                 result.update(added=pushed["added"], updated=pushed["updated"],
                               in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
@@ -94,14 +94,25 @@ def _run_cycle(trigger: str) -> dict:
 
 
 def _paused() -> bool:
+    """Pull automation paused (no new leads pulled from the source sheet)."""
     return db.meta_get("sched_paused") == "1"
+
+
+def _push_paused() -> bool:
+    """Push automation paused (nothing goes to the destination sheet on its own;
+    the manual Push button is enabled instead)."""
+    return db.meta_get("sched_push_paused") == "1"
+
+
+def _all_paused() -> bool:
+    return _paused() and _push_paused()
 
 
 def _scheduler_loop() -> None:
     if _next_run() <= 0:
         _set_next_run(time.time() + 60)        # first ever start: first cycle in a minute
     while not _scheduler_stop.is_set():
-        if _paused():
+        if _all_paused():
             _wake.wait()                        # sleep until resumed (or stopped)
             _wake.clear()
             continue
@@ -109,7 +120,7 @@ def _scheduler_loop() -> None:
         _wake.clear()
         if _scheduler_stop.is_set():
             break
-        if _paused():
+        if _all_paused():
             continue                            # paused while waiting
         _run_cycle("manual" if woke else "scheduled")
 
@@ -139,8 +150,9 @@ def _automation_status() -> dict:
         "max_per_cycle": config.SCHEDULER_MAX_PER_CYCLE,
         "running": db.meta_get("sched_running") == "1",
         "paused": _paused(),
+        "push_paused": _push_paused(),
         "next_in": (max(0, round(nxt - time.time()))
-                    if config.SCHEDULER_ENABLED and nxt and not _paused() else None),
+                    if config.SCHEDULER_ENABLED and nxt and not _all_paused() else None),
         "last": last,
         "seen": db.count_seen(),
         "persistent_disk": bool(os.getenv("DATA_DIR")),
@@ -682,32 +694,36 @@ def _sync_dest() -> dict:
 
 @app.post("/api/sheets/push")
 def sheets_push() -> JSONResponse:
-    """Sync decided leads to the destination sheet (add new, edit changed rows)."""
+    """Sync decided leads to the destination sheet (add new, edit changed rows).
+    Manual only while push automation is paused (or automation is off) — when it
+    is playing, every cycle already pushes, so this is refused."""
+    if config.SCHEDULER_ENABLED and not _push_paused():
+        raise HTTPException(409, "Automation is already pushing leads to the sheet every "
+                                 f"{round(config.SCHEDULER_INTERVAL_SECONDS / 60)} min — no need "
+                                 "to click Push. Pause push automation to push manually.")
     if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
         raise HTTPException(400, "Google service account not configured (GOOGLE_SERVICE_ACCOUNT_JSON).")
     if not config.GOOGLE_DEST_SHEET_ID:
         raise HTTPException(400, "No destination sheet configured (GOOGLE_DEST_SHEET_ID).")
     try:
-        out = _locked_sync()
+        return JSONResponse(_locked_sync())
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
-    # With automation on, a manual Push also runs a full cycle now (pull new
-    # leads, process, push) and the 10-minute countdown restarts after it.
-    if config.SCHEDULER_ENABLED and not _paused() and not _cycle_lock.locked():
-        _wake.set()
-        out["cycle_started"] = True
-    return JSONResponse(out)
 
 
 @app.post("/api/automation/pause")
 def automation_pause(body: dict) -> JSONResponse:
-    """Pause or resume the automation. Pausing lets a running cycle finish but
-    starts no new ones; resuming runs a cycle right away (to catch leads that
-    arrived meanwhile), then every interval again. Persisted across restarts."""
+    """Pause or resume the pull or the push automation ({"target": "pull"|"push",
+    "paused": bool}); the two are independent. Pausing lets a running cycle
+    finish; resuming runs a cycle right away (catching leads that arrived, or
+    pushing what was held back), then every interval again. Persisted."""
     if not config.SCHEDULER_ENABLED:
         raise HTTPException(400, "Automation is not enabled on this server (SCHEDULER_ENABLED).")
+    target = body.get("target", "pull")
+    if target not in ("pull", "push"):
+        raise HTTPException(400, "target must be 'pull' or 'push'")
     paused = bool(body.get("paused"))
-    db.meta_set("sched_paused", "1" if paused else "0")
+    db.meta_set("sched_paused" if target == "pull" else "sched_push_paused", "1" if paused else "0")
     if not paused:
         _set_next_run(time.time())
     _wake.set()                                 # let the loop see the change now

@@ -42,7 +42,16 @@ async function uploadFile(file) {
 $("#runBtn").addEventListener("click", async () => { const b = $("#runBtn"); b.disabled = true; try { const d = await readResponse(await fetch("/api/run", { method: "POST" })); $("#uploadMsg").className = "msg ok"; $("#uploadMsg").textContent = `Processing ${d.queued} queued leads…`; startPolling(); } catch (e) { $("#uploadMsg").className = "msg err"; $("#uploadMsg").textContent = e.message; } finally { setTimeout(() => (b.disabled = false), 1500); } });
 $("#resetBtn").addEventListener("click", async () => { if (!confirm("Delete all leads and results?")) return; await fetch("/api/reset", { method: "POST" }); refresh(); });
 $("#pullBtn").addEventListener("click", async () => { const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Pulling leads…"; try { const d = await readResponse(await fetch("/api/sheets/pull", { method: "POST" })); const bd = d.tabs ? " (" + Object.entries(d.tabs).map(([t, n]) => `${t}: ${n}`).join(", ") + ")" : ""; m.className = "msg ok"; m.textContent = `Pulled ${d.inserted} leads${bd}.`; refresh(); } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
-$("#pushBtn").addEventListener("click", async () => { const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Pushing…"; try { const d = await readResponse(await fetch("/api/sheets/push", { method: "POST" })); m.className = "msg ok"; const parts = []; if (d.added) parts.push(`added ${d.added}`); if (d.updated) parts.push(`updated ${d.updated}`); m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "") + (d.cycle_started ? " Automation cycle started — pulling new leads now; the 10-minute countdown restarts after it." : ""); if (d.cycle_started) { startPolling(); setTimeout(loadStats, 800); } } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
+$("#pushBtn").addEventListener("click", async () => {
+  const m = $("#uploadMsg");
+  if (_autoPushing) { m.className = "msg"; m.textContent = "Automation is already pushing leads to the sheet automatically — no need to click Push. Pause “Push” in the automation bar to push manually."; return; }
+  m.className = "msg"; m.textContent = "Pushing…";
+  try {
+    const d = await readResponse(await fetch("/api/sheets/push", { method: "POST" }));
+    m.className = "msg ok"; const parts = []; if (d.added) parts.push(`added ${d.added}`); if (d.updated) parts.push(`updated ${d.updated}`);
+    m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "");
+  } catch (e) { m.className = "msg err"; m.textContent = e.message; }
+});
 $("#baselineBtn").addEventListener("click", async () => { if (!confirm("Mark ALL current source rows as seen (skip them)?")) return; const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Baselining…"; try { const d = await readResponse(await fetch("/api/sheets/baseline", { method: "POST" })); m.className = "msg ok"; m.textContent = `Baselined ${d.baselined} rows.`; } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
 
 // ── Pipeline animation ──────────────────────────────────────────────────────
@@ -165,29 +174,37 @@ function _lastRunText(l) {
   if (l.baselined != null) p.push(`marked ${l.baselined} existing rows as seen (backlog skipped)`);
   if (l.pulled != null) p.push(`${l.pulled} new lead${l.pulled === 1 ? "" : "s"}`);
   if (l.added || l.updated) p.push(`sheet: ${l.added || 0} added, ${l.updated || 0} updated`);
+  else if (l.added == null) p.push("not pushed (push paused)");
   if (l.in_review) p.push(`${l.in_review} awaiting review`);
   if (l.incomplete) p.push(`${l.incomplete} incomplete held back`);
-  return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (Push)" : ""}: ${p.join(" · ") || "nothing new"}`;
+  return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (resumed)" : ""}: ${p.join(" · ") || "nothing new"}`;
 }
+let _autoPushing = false;   // push automation playing -> manual Push is redundant
 function renderAutomation(a) {
   const el = $("#autoBar"); if (!el || !a) return;
   el.hidden = false;
+  _autoPushing = !!(a.enabled && !a.push_paused);
+  const pb = $("#pushBtn");
+  if (pb) { pb.classList.toggle("is-auto", _autoPushing); pb.title = _autoPushing ? "Automation is pushing leads to the sheet automatically" : "Push decided leads to the sheet now"; }
   if (!a.enabled) { _autoNextAt = null; setHTML(el, `<span class="auto-dot"></span><b>Automation off</b><span class="sub">Set SCHEDULER_ENABLED=true on Render to run every ${Math.round(a.interval / 60)} min.</span>`); return; }
-  _autoNextAt = a.running || a.paused || a.next_in == null ? null : Date.now() + a.next_in * 1000;
+  const min = Math.round(a.interval / 60), both = a.paused && a.push_paused;
+  _autoNextAt = a.running || both || a.next_in == null ? null : Date.now() + a.next_in * 1000;
   const disk = a.persistent_disk ? "" : `<span class="auto-warn">⚠ No persistent disk (DATA_DIR not set) — data resets on deploy</span>`;
-  const btn = a.paused
-    ? `<button class="auto-btn" data-pause="0" title="Resume: runs a cycle now, then every ${Math.round(a.interval / 60)} min">▶ Resume</button>`
-    : `<button class="auto-btn" data-pause="1" title="Pause: a running cycle finishes, no new ones start">⏸ Pause</button>`;
-  const state = a.paused
-    ? `<span class="auto-dot paused"></span><b>Automation paused</b>${a.running ? " · finishing the current cycle…" : " · no automatic pulls or pushes"}`
-    : `<span class="auto-dot on"></span><b>Automation on</b> · every ${Math.round(a.interval / 60)} min · <span id="autoNext">${a.running ? "running now…" : ""}</span>`;
-  setHTML(el, `${btn}${state}<span class="sub">${esc(_lastRunText(a.last))}</span>${disk}`);
+  const toggle = (target, paused) => paused
+    ? `<button class="auto-btn" data-target="${target}" data-pause="0" title="Resume ${target}: runs now, then every ${min} min">▶ ${target === "pull" ? "Pull" : "Push"}</button>`
+    : `<button class="auto-btn on" data-target="${target}" data-pause="1" title="Pause ${target}">⏸ ${target === "pull" ? "Pull" : "Push"}</button>`;
+  const part = (label, paused) => `${label} <b class="${paused ? "st-off" : "st-on"}">${paused ? "paused" : "on"}</b>`;
+  const title = both ? "<b>Automation paused</b>" : !a.paused && !a.push_paused ? "<b>Automation on</b>" : "<b>Automation partly on</b>";
+  const when = both ? (a.running ? " · finishing the current cycle…" : "") : ` · every ${min} min · <span id="autoNext">${a.running ? "running now…" : ""}</span>`;
+  setHTML(el, `${toggle("pull", a.paused)}${toggle("push", a.push_paused)}<span class="auto-dot ${both ? "paused" : "on"}"></span>${title}${when}` +
+    `<span class="sub">${part("pull", a.paused)} · ${part("push to sheet", a.push_paused)}${a.push_paused ? " — use ↑ Push" : ""}</span>` +
+    `<span class="sub">${esc(_lastRunText(a.last))}</span>${disk}`);
   tickAutomation();
 }
 $("#autoBar").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-pause]"); if (!b) return;
   b.disabled = true;
-  try { const a = await readResponse(await fetch("/api/automation/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused: b.dataset.pause === "1" }) })); renderAutomation(a); setTimeout(loadStats, 1500); }
+  try { const a = await readResponse(await fetch("/api/automation/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: b.dataset.target, paused: b.dataset.pause === "1" }) })); renderAutomation(a); setTimeout(loadStats, 1500); }
   catch (err) { alert(err.message); b.disabled = false; }
 });
 function tickAutomation() {

@@ -124,6 +124,9 @@ h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -0.03em; }
 .auto-btn { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
 .auto-btn:hover { border-color: var(--accent); }
 .auto-btn:disabled { opacity: .5; cursor: default; }
+.auto-btn.on { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.auto-bar .st-on { color: var(--good); } .auto-bar .st-off { color: var(--warn); }
+.btn.is-auto { opacity: .45; cursor: not-allowed; }
 
 .panel { background: var(--panel); background-image: var(--card-grad); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); }
 
