@@ -12,7 +12,8 @@ from .config import DB_PATH
 _lock = threading.Lock()
 
 # Columns stored as JSON text.
-_JSON_FIELDS = ("extracted", "queries", "candidates", "chosen", "screening", "pushed_row")
+_JSON_FIELDS = ("extracted", "queries", "candidates", "chosen", "screening", "pushed_row",
+                "gtm_counted")
 
 
 def _conn() -> sqlite3.Connection:
@@ -34,6 +35,8 @@ _COLUMNS = {
     "li_optout": "INTEGER DEFAULT 0",
     "other_link": "TEXT",          # a non-LinkedIn profile link the lead provided
     "link_raw": "TEXT",            # the profile-link cell exactly as the lead typed it
+    "origin": "TEXT",              # 'sheet' (pulled from the source sheet) | 'upload' (CSV)
+    "gtm_counted": "TEXT",         # JSON: where this lead was +1'd in the GTM report
     "visa": "TEXT",
     "lead_date": "TEXT",
     "message": "TEXT",
@@ -146,16 +149,17 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def insert_lead(name: str, company: str, email: str, phone: str, message: str,
                 linkedin: str = "", li_optout: int = 0, other_link: str = "",
-                link_raw: str = "", visa: str = "", lead_date: str = "", channel: str = "") -> int:
+                link_raw: str = "", visa: str = "", lead_date: str = "", channel: str = "",
+                origin: str = "") -> int:
     now = time.time()
     with _lock, _conn() as conn:
         cur = conn.execute(
             """INSERT INTO leads (name, company, channel, email, phone, linkedin,
                                   li_optout, other_link, link_raw, visa, lead_date,
-                                  message, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                                  message, origin, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
             (name, company, channel, email, phone, linkedin, li_optout, other_link,
-             link_raw, visa, lead_date, message, now, now),
+             link_raw, visa, lead_date, message, origin, now, now),
         )
         return int(cur.lastrowid)
 

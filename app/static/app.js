@@ -176,6 +176,8 @@ function _lastRunText(l) {
   if (l.added || l.updated) p.push(`sheet: ${l.added || 0} added, ${l.updated || 0} updated`);
   else if (l.added == null) p.push("not pushed (push paused)");
   if (l.in_review) p.push(`${l.in_review} awaiting review`);
+  if (l.report && (l.report.added || l.report.removed)) p.push(`GTM report +${l.report.added}${l.report.removed ? ` −${l.report.removed}` : ""}`);
+  if (l.report_issue) p.push(`GTM report issue: ${l.report_issue}`);
   if (l.incomplete) p.push(`${l.incomplete} incomplete held back`);
   return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (resumed)" : ""}: ${p.join(" · ") || "nothing new"}`;
 }

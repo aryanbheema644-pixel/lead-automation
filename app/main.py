@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, sheets
+from . import config, db, gtm, sheets
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -83,6 +83,13 @@ def _run_cycle(trigger: str) -> dict:
                 pushed = _locked_sync()
                 result.update(added=pushed["added"], updated=pushed["updated"],
                               in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
+            if config.GTM_SHEET_ID:
+                # Weekly GTM report: +1 per newly accepted lead (channel + AE SQL).
+                rep = gtm.sync_report()
+                result["report"] = {"added": rep["added"], "removed": rep["removed"],
+                                    "skipped": len(rep["skipped"])}
+                if rep["skipped"]:
+                    result["report_issue"] = rep["skipped"][0][:200]
         except Exception as e:  # noqa: BLE001 — never let the loop die; show it instead
             result["error"] = str(e)[:300]
         finally:
@@ -273,7 +280,7 @@ _SOURCE_LABEL = {"Meta": "Meta Ads", "WhatsApp": "WhatsApp", "Website": "Website
                  "Google Ads": "Google Ads", "Referral": "Referral", "LinkedIn": "LinkedIn"}
 
 
-def _insert_row(val, channel: str = "", link: str = "") -> bool:
+def _insert_row(val, channel: str = "", link: str = "", origin: str = "") -> bool:
     """Insert one mapped row. `link` is the LLM-repaired profile link, if any;
     otherwise the raw cell is used (deterministic parsing still applies)."""
     if not any(val(k) for k in ("name", "company", "email", "phone", "message")):
@@ -287,6 +294,7 @@ def _insert_row(val, channel: str = "", link: str = "") -> bool:
         other_link=canonical_url(info["other_url"]) or info["other_url"],
         link_raw=raw_link, visa=normalize_visa(val("visa")), lead_date=val("date"),
         channel=_channel_from_tab(row_channel) if row_channel else channel,
+        origin=origin,
     )
     # Every lead stays 'queued'; process_lead routes it:
     #  - provided LinkedIn -> fast path: scrape + screen that URL, no search.
@@ -347,7 +355,8 @@ def _map_columns(rows: list[list[str]]) -> dict:
 
 
 def _ingest_rows(rows: list[list[str]], dedup: bool = False,
-                 limit: int | None = None, channel: str = "") -> tuple[int, dict]:
+                 limit: int | None = None, channel: str = "",
+                 origin: str = "upload") -> tuple[int, dict]:
     """Map columns via the LLM, then insert each data row as a queued lead.
     With dedup=True, skip rows already ingested (by _dedup_key) and record new
     ones as seen. Shared by CSV upload, Google Sheet pull, and the scheduler."""
@@ -380,7 +389,7 @@ def _ingest_rows(rows: list[list[str]], dedup: bool = False,
     links = _repair_links([val("linkedin") for val, _ in picked])
     count, new_keys = 0, []
     for i, (val, key) in enumerate(picked):
-        if _insert_row(val, channel=channel, link=links.get(i, "")):
+        if _insert_row(val, channel=channel, link=links.get(i, ""), origin=origin):
             count += 1
             new_keys.append(key)
     if new_keys:
@@ -524,7 +533,7 @@ def _pull_new(limit: int | None = None) -> dict:
     total, per_tab, remaining = 0, {}, limit
     for title, rows in tabs:
         count, _ = _ingest_rows(rows, dedup=True, limit=remaining,
-                                channel=_channel_from_tab(title))
+                                channel=_channel_from_tab(title), origin="sheet")
         per_tab[title] = count
         total += count
         if remaining is not None:

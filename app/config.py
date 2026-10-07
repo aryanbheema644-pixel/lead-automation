@@ -107,6 +107,16 @@ AE_DIRECTORY = _get_directory(
     "Rahul:32114362:Rahul Bamal,Rocio:32884736:Rocio Hernandez",
 )
 
+# Weekly GTM report: each ACCEPTED lead pulled from the source sheet adds +1 to
+# its channel row and its AE's SQL row, in the column of the week it came in.
+# Blank GTM_SHEET_ID disables it. Rows are found by their label in column B.
+GTM_SHEET_ID = _get("GTM_SHEET_ID", "10Lny-WiFbptDapxNwEEXj-PDEIaEz_uM_A81kfm01PA")  # copy, for testing
+GTM_TAB = _get("GTM_TAB", "MQL Tracker")
+GTM_CHANNEL_ROWS = {"Meta": "Inbound - Meta", "WhatsApp": "Inbound - Website (Whatsapp)",
+                    "Website": "Inbound - Website (SEO + AEO)"}
+GTM_SQL_ROW = "{ae} - SQL"          # e.g. "Rahul - SQL"; {ae} = the AE's first name
+
+
 # Auto-ingest scheduler: periodically pull new leads from the source sheet, run
 # the pipeline, and push results. OFF by default (it spends money + writes to the
 # sheet). Dedup ensures the same lead is never processed twice.
