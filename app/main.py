@@ -596,8 +596,9 @@ def sheets_baseline() -> JSONResponse:
         _cycle_lock.release()
 
 
-# Only decided leads go to the sheet; 'review' waits for a human decision.
-_PUSHABLE = {"accepted", "rejected"}
+# Only ACCEPTED leads are added to the Pipedrive sheet. A lead that was pushed
+# and later rejected keeps its row, updated in place (e.g. status "rejected"),
+# but a rejected/review lead is never added as a new row.
 
 
 def _find_dest_row(values: list[list[str]], cols: dict[str, int],
@@ -630,23 +631,25 @@ def _find_dest_row(values: list[list[str]], cols: dict[str, int],
 def _sync_dest() -> dict:
     """Make the destination sheet reflect the decided leads, editing in place.
 
-    - accepted/rejected leads never pushed  -> appended as one complete row
+    - accepted leads never pushed           -> appended as one complete row
     - pushed leads whose values changed     -> only the changed cells rewritten
       (diffed against what we last wrote, so manual edits elsewhere survive)
     - unchanged                             -> skipped
     - pushed but row gone from the sheet    -> re-added only if it changed since
-    - review / queued / processing / error  -> not pushed
+    - rejected after being pushed           -> its row updated, never re-added
+    - review / rejected / queued / error    -> never added
     - incomplete (no name, no email+number, or no owner id) -> held back, so
       Pipedrive never gets an empty deal
     Source is written only inside a complete appended row, never updated later.
     """
     all_leads = db.list_leads()
-    leads = [l for l in all_leads if l.get("status") in _PUSHABLE]
+    leads = [l for l in all_leads if l.get("status") == "accepted"
+             or (l.get("status") == "rejected" and l.get("pushed"))]
     out = {"added": 0, "updated": 0, "unchanged": 0, "incomplete": [],
            "in_review": sum(1 for l in all_leads if l.get("status") == "review")}
     pending = []
     for l in leads:
-        if not l.get("owner"):
+        if not l.get("owner") and l.get("status") == "accepted":
             l["owner"] = distribution.assign_owner(l)
             db.update_lead(l["id"], owner=l["owner"])
         f = _dest_fields(l)
@@ -681,7 +684,8 @@ def _sync_dest() -> dict:
             continue
         row = _find_dest_row(values, cols, l.get("sheet_row"), snap or f)
         if row is None:
-            to_add.append((l, f))          # deleted from the sheet but changed since
+            if l.get("status") == "accepted":
+                to_add.append((l, f))      # deleted from the sheet but changed since
             continue
         # Diff against what we last wrote; for leads pushed before snapshots
         # existed, against what's in the sheet now.
@@ -822,6 +826,10 @@ def choose(lead_id: int, body: dict) -> JSONResponse:
         else:
             fields.update(screening={"note": "Screening this LinkedIn profile…"}, screened=0)
             rescreen = True
+    if not lead.get("owner"):
+        # AEs are assigned on acceptance only, so rejected/review leads don't
+        # use up a round-robin turn.
+        fields["owner"] = distribution.assign_owner({**lead, "chosen": chosen})
     db.update_lead(
         lead_id, status="accepted", chosen=chosen,
         confidence=chosen.get("score", 0.0),
@@ -835,10 +843,14 @@ def choose(lead_id: int, body: dict) -> JSONResponse:
 
 @app.post("/api/leads/{lead_id}/reject")
 def reject(lead_id: int) -> JSONResponse:
-    if not db.get_lead(lead_id):
+    lead = db.get_lead(lead_id)
+    if not lead:
         raise HTTPException(404, "Lead not found")
+    fields = {}
+    if not lead.get("pushed"):
+        fields["owner"] = None             # never reached an AE: free the assignment
     db.update_lead(lead_id, status="rejected",
-                   reasoning="Manually rejected by reviewer.")
+                   reasoning="Manually rejected by reviewer.", **fields)
     return JSONResponse({"ok": True})
 
 

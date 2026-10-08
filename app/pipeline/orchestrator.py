@@ -268,10 +268,14 @@ def process_lead(lead_id: int) -> None:
         if chosen:
             _cache_on_candidate(candidates, chosen, screen_summary)
 
-        # Step 10 — assign the AE (Owner) per the distribution rules
-        owner = distribution.assign_owner({
-            "phone": lead.get("phone"), "message": lead.get("message"),
-            "visa": lead.get("visa"), "extracted": extracted, "chosen": chosen or {}})
+        # Step 10 — assign the AE (Owner) per the distribution rules — only for
+        # accepted leads, so rejected/review ones don't consume a round-robin turn
+        # (review leads get their AE when a reviewer accepts them).
+        owner = None
+        if status == "accepted":
+            owner = distribution.assign_owner({
+                "phone": lead.get("phone"), "message": lead.get("message"),
+                "visa": lead.get("visa"), "extracted": extracted, "chosen": chosen or {}})
 
         db.update_lead(
             lead_id,
