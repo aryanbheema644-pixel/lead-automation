@@ -74,7 +74,22 @@ function prettyUrl(u) { u = String(u || "").replace(/^https?:\/\//, "").replace(
 function topMatch(lead) { const c = (lead.candidates || [])[0], ch = lead.chosen; const src = ch && ch.url ? ch : c; if (!src) return '<span class="sub">—</span>'; const label = SOURCE_LABELS[src.source_type] || src.source_type || "—"; return `<div class="tm-label">${esc(label)}</div><a class="tm-url" href="${src.url}" target="_blank" rel="noopener">${esc(prettyUrl(src.url))}</a>`; }
 function tierChip(s) { if (!s || !s.tier) return '<span class="sub">—</span>'; const t = esc(s.tier); return `<span class="tier ${t}">${t}</span>`; }
 function rowActions(l) { let b = ""; if (l.status === "review") b += `<button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button>`; else if (l.status === "accepted") b += `<button class="mini no" data-reject="${l.id}">Reject</button>`; b += `<button class="link-btn" data-open="${l.id}">Details ▸</button><button class="icon-del" data-delete="${l.id}" title="Delete lead" aria-label="Delete lead"><svg width="15" height="15" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`; return `<div class="row-actions">${b}</div>`; }
+// AE column: a dropdown right in the table (merged-away duplicates just show text).
+function aeCell(l) {
+  if (l.status === "duplicate" || !_aes.length) return l.owner ? `<span class="ae">${esc(l.owner)}</span>` : '<span class="sub">—</span>';
+  return `<select class="ae-select" data-ae="${l.id}" title="Change AE — updates the Pipedrive sheet and GTM report">${l.owner ? "" : '<option value="" selected>—</option>'}${_aes.map((a) => `<option ${a === l.owner ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>`;
+}
+async function changeAE(id, owner, sel) {
+  sel.disabled = true;
+  try {
+    const d = await readResponse(await fetch(`/api/leads/${id}/owner`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner }) }));
+    sel.classList.add("saved"); sel.title = d.synced ? "Saved — updating the Pipedrive sheet and GTM report now" : d.pending_push ? "Saved — goes to the Pipedrive sheet on your next ↑ Push" : "Saved";
+    setTimeout(refresh, 600);
+  } catch (e) { alert(e.message); refresh(); }
+  finally { sel.disabled = false; }
+}
 function wireRowButtons(root) {
+  root.querySelectorAll("[data-ae]").forEach((s) => { s.addEventListener("click", (e) => e.stopPropagation()); s.addEventListener("change", (e) => { e.stopPropagation(); if (s.value) changeAE(s.dataset.ae, s.value, s); }); });
   root.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDrawer(b.dataset.open); }));
   root.querySelectorAll("[data-accept]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); acceptTop(b.dataset.accept); }));
   root.querySelectorAll("[data-reject]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); rejectLead(b.dataset.reject); }));
@@ -104,7 +119,7 @@ async function loadLeads() {
     <td>${badge(l.status, l.stage)}${l.dup_of && l.status !== "duplicate" ? `<div><span class="dup-flag" title="${esc(l.dup_reason || "")}">possible duplicate of #${l.dup_of}</span></div>` : _dupTargets.has(l.id) ? `<div><span class="dup-flag">possible duplicate — check Duplicates</span></div>` : ""}${l.status === "duplicate" && l.merged_into ? `<div class="sub">merged into #${l.merged_into}</div>` : ""}</td>
     <td>${topMatch(l)}</td>
     <td>${tierChip(l.screening)}</td>
-    <td>${l.owner ? `<span class="ae">${esc(l.owner)}</span>` : '<span class="sub">—</span>'}</td>
+    <td>${aeCell(l)}</td>
     <td>${rowActions(l)}</td></tr>`).join(""))) wireRowButtons(tb);
 }
 async function loadReview() {
@@ -164,7 +179,7 @@ let _spark = sparkline([1, 1]), _trend = { text: "", cls: "trend" };
 async function loadStats() {
   const st = await (await fetch("/api/status")).json();
   const { stats, running, providers } = st;
-  if (st.aes) _aes = st.aes;
+  if (st.aes) { const first = !_aes.length; _aes = st.aes; if (first) loadLeads(); }
   $("#dupCount").textContent = st.duplicate_checks || 0;
   const tot = stats.total || 0, pct = (n) => (tot ? ((n / tot) * 100).toFixed(1) + "%" : "0%");
   const tiles = [
