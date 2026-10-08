@@ -35,11 +35,50 @@ def _startup() -> None:
             orchestrator.start_rescreen(l["id"])
     if requeued and config.SCHEDULER_ENABLED:
         orchestrator.start_worker()
+    if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
+        threading.Thread(target=_fix_old_visas, daemon=True).start()
     if db.meta_get("dedupe_scanned") != "1":
         # Leads that came in before duplicate handling existed: check them once.
         db.meta_set("dedupe_scan_result", json.dumps(dedupe.scan_existing()))
         db.meta_set("dedupe_scanned", "1")
     _start_scheduler()
+
+
+def _fix_old_visas() -> None:
+    """One-time correction: leads processed while "Not sure" still defaulted to
+    O1 get "AE decide" — found by looking up what they actually typed in the
+    source sheet (same channel + email/phone/name). Blank visas -> "AE decide"."""
+    try:
+        raw: dict[str, str] = {}
+        for title, rows in sheets.read_source_tabs():
+            rows = [r for r in rows if any((c or "").strip() for c in r)]
+            if not rows:
+                continue
+            mapping = _map_columns(rows)
+            ch = _channel_from_tab(title).lower()
+            for row in (rows[1:] if mapping.get("has_header") else rows):
+                def val(key: str, _row=row) -> str:
+                    return " ".join(_row[i].strip() for i in _indices(mapping, key)
+                                    if 0 <= i < len(_row) and _row[i].strip())
+                key, _ = _dedup_keys(val("name"), val("email"), val("phone"))
+                if key:
+                    raw.setdefault(f"{ch}|{key}", val("visa"))
+        fixed = 0
+        for l in db.list_leads():
+            v = (l.get("visa") or "").strip()
+            if normalize_visa(v) != v:          # blank, "Place holder", a URL, raw "O1 Visa"…
+                db.update_lead(l["id"], visa=normalize_visa(v))
+                fixed += 1
+            elif v == "O1":
+                key, _ = _dedup_keys(l.get("name", ""), l.get("email", ""), l.get("phone", ""))
+                typed = raw.get(f"{(l.get('channel') or '').lower()}|{key}")
+                if typed is not None and normalize_visa(typed) == _NO_VISA:
+                    db.update_lead(l["id"], visa=_NO_VISA)
+                    fixed += 1
+        db.meta_set("visa_fix_result", json.dumps({"fixed": fixed}))
+        db.meta_set("visa_fix_done", "1")
+    except Exception as e:  # noqa: BLE001 — retried on the next start
+        db.meta_set("visa_fix_result", json.dumps({"error": str(e)[:200]}))
 
 
 # ── Automation ────────────────────────────────────────────────────────────
@@ -272,16 +311,19 @@ _VISA_RULES = [
 ]
 
 
+_NO_VISA = "AE decide"     # lead didn't indicate a visa: the AE picks the path
+
+
 def normalize_visa(text: str) -> str:
     """'O1 Visa' / 'O-1' / 'o1' -> 'O1'; 'o-1a_' -> 'O1A'; 'eb-2_niw' /
     'EB-2 NIW Green Card' -> 'EB2 NIW'; 'eb-1a' -> 'EB1A'; 'H1-B Visa' -> 'H1B'.
-    "Not sure (yet)" defaults to 'O1'. Anything unrecognized is kept as typed."""
+    No visa indicated (blank, "Not sure (yet)", "Place holder", "Others", "N/A",
+    a stray URL…) -> 'AE decide'. Anything else unrecognized is kept as typed."""
     raw = (text or "").strip()
     t = raw.lower()
-    if not t or "linkedin.com" in t or "http" in t or "www." in t:
-        return raw
-    if re.search(r"not[\s_-]*sure", t):
-        return "O1"
+    if (not t or "linkedin.com" in t or "http" in t or "www." in t
+            or re.search(r"not[\s_-]*sure|place[\s_-]*holder|^others?$|^n/?a$|^none$|^-+$|^unknown$", t)):
+        return _NO_VISA
     for pat, code in _VISA_RULES:
         if re.search(pat, t):
             return code
