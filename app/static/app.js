@@ -49,7 +49,7 @@ $("#pushBtn").addEventListener("click", async () => {
   try {
     const d = await readResponse(await fetch("/api/sheets/push", { method: "POST" }));
     m.className = "msg ok"; const parts = []; if (d.added) parts.push(`added ${d.added}`); if (d.updated) parts.push(`updated ${d.updated}`);
-    m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "");
+    m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "") + (d.report && (d.report.added || d.report.removed) ? ` GTM report +${d.report.added}${d.report.removed ? ` −${d.report.removed}` : ""}.` : "") + (d.report_issue ? ` GTM report issue: ${d.report_issue}` : "");
   } catch (e) { m.className = "msg err"; m.textContent = e.message; }
 });
 $("#baselineBtn").addEventListener("click", async () => { if (!confirm("Mark ALL current source rows as seen (skip them)?")) return; const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Baselining…"; try { const d = await readResponse(await fetch("/api/sheets/baseline", { method: "POST" })); m.className = "msg ok"; m.textContent = `Baselined ${d.baselined} rows.`; } catch (e) { m.className = "msg err"; m.textContent = e.message; } });

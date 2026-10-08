@@ -80,16 +80,12 @@ def _run_cycle(trigger: str) -> dict:
             while orchestrator.is_running() and not _scheduler_stop.is_set():
                 time.sleep(1)
             if config.GOOGLE_DEST_SHEET_ID and not _push_paused():
-                pushed = _locked_sync()
+                pushed = _locked_sync()           # also updates the GTM report
                 result.update(added=pushed["added"], updated=pushed["updated"],
                               in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
-            if config.GTM_SHEET_ID:
-                # Weekly GTM report: +1 per newly accepted lead (channel + AE SQL).
-                rep = gtm.sync_report()
-                result["report"] = {"added": rep["added"], "removed": rep["removed"],
-                                    "skipped": len(rep["skipped"])}
-                if rep["skipped"]:
-                    result["report_issue"] = rep["skipped"][0][:200]
+                for k in ("report", "report_issue"):
+                    if k in pushed:
+                        result[k] = pushed[k]
         except Exception as e:  # noqa: BLE001 — never let the loop die; show it instead
             result["error"] = str(e)[:300]
         finally:
@@ -141,8 +137,21 @@ def _start_scheduler() -> None:
 
 
 def _locked_sync() -> dict:
+    """Push to the destination (Pipedrive) sheet, then update the weekly GTM
+    report from what's now in it — the report follows the outflow only, whether
+    the push came from the button or the automation."""
     with _sync_lock:
-        return _sync_dest()
+        out = _sync_dest()
+        if config.GTM_SHEET_ID:
+            try:
+                rep = gtm.sync_report()
+                out["report"] = {"added": rep["added"], "removed": rep["removed"],
+                                 "skipped": len(rep["skipped"])}
+                if rep["skipped"]:
+                    out["report_issue"] = rep["skipped"][0][:200]
+            except Exception as e:  # noqa: BLE001 — a report problem must not fail the push
+                out["report_issue"] = f"GTM report not updated: {str(e)[:200]}"
+        return out
 
 
 def _automation_status() -> dict:
