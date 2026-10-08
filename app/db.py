@@ -13,7 +13,7 @@ _lock = threading.Lock()
 
 # Columns stored as JSON text.
 _JSON_FIELDS = ("extracted", "queries", "candidates", "chosen", "screening", "pushed_row",
-                "gtm_counted")
+                "gtm_counted", "merged_from")
 
 
 def _conn() -> sqlite3.Connection:
@@ -37,6 +37,10 @@ _COLUMNS = {
     "link_raw": "TEXT",            # the profile-link cell exactly as the lead typed it
     "origin": "TEXT",              # 'sheet' (pulled from the source sheet) | 'upload' (CSV)
     "gtm_counted": "TEXT",         # JSON: where this lead was +1'd in the GTM report
+    "dup_of": "INTEGER",           # open "possible duplicate of lead #N" flag (Duplicates page)
+    "dup_reason": "TEXT",          # why it was flagged / merged (same name, same email, …)
+    "merged_into": "INTEGER",      # status 'duplicate': merged into lead #N
+    "merged_from": "TEXT",         # JSON list of lead ids merged into this one
     "visa": "TEXT",
     "lead_date": "TEXT",
     "message": "TEXT",
@@ -79,14 +83,11 @@ def init_db() -> None:
 
 
 def seen_keys() -> set:
-    """All dedup keys we've already ingested — from seen_leads plus existing
-    leads' emails (so we never re-ingest the same person)."""
+    """All keys of source rows already ingested (or baselined). Keys are per
+    channel, so the same person arriving on another channel still comes in —
+    and is then merged as a duplicate rather than silently dropped."""
     with _conn() as conn:
-        keys = {r["k"] for r in conn.execute("SELECT k FROM seen_leads")}
-        for r in conn.execute("SELECT email FROM leads WHERE email != ''"):
-            if r["email"]:
-                keys.add(r["email"].strip().lower())
-    return keys
+        return {r["k"] for r in conn.execute("SELECT k FROM seen_leads")}
 
 
 def mark_seen(keys: list[str]) -> None:

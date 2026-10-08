@@ -273,3 +273,22 @@ table.leads { width: 100%; border-collapse: collapse; }
   .outcomes { flex-direction: column; } .leads th:nth-child(3), .leads td:nth-child(3) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .flow-dot, .node.active circle, .spin { animation: none !important; } }
+
+/* ===== Duplicates ===== */
+.dup-intro { margin: 0 0 14px; }
+.dup-list { display: flex; flex-direction: column; gap: 16px; }
+.dup-card { padding: 18px; background: var(--panel); background-image: var(--card-grad); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 12px; }
+.dup-head { display: flex; align-items: center; gap: 10px; }
+.dup-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dup-side { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--panel-2); min-width: 0; }
+.dup-side h4 { margin: 2px 0 8px; font-size: 15px; }
+.dup-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.dup-grid { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 4px 10px; font-size: 12.5px; }
+.dup-grid .dk { color: var(--muted); } .dup-grid .dv { overflow-wrap: anywhere; }
+.dup-flag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.dup-note { font-size: 12.5px; color: var(--muted); margin: 8px 0; } .dup-note.warn { color: var(--warn); }
+.ae-pick { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font-size: 13px; }
+.ae-pick .k { color: var(--muted); }
+.ae-pick select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; font-size: 13px; }
+.badge.duplicate { background: var(--chip); color: var(--muted); }
+@media (max-width: 980px) { .dup-pair { grid-template-columns: minmax(0, 1fr); } }

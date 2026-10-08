@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-let pollTimer = null, _rescreening = false;
+let pollTimer = null, _rescreening = false, _aes = [];
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 // Only touch the DOM when the markup actually changed — the dashboard polls every
 // 2s while running, and blind re-renders make the page flicker and jump.
@@ -20,7 +20,7 @@ $("#themeToggle").addEventListener("click", () => {
 });
 
 // ── Router ──────────────────────────────────────────────────────────────────
-const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review" };
+const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates" };
 function setPage(p) { if (!PAGES[p]) p = "dashboard"; document.querySelectorAll(".page").forEach((s) => (s.hidden = s.dataset.page !== p)); document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === p)); }
 window.addEventListener("hashchange", () => setPage(location.hash.slice(1)));
 
@@ -96,11 +96,12 @@ async function loadLeads() {
   if (_rescreening) startPolling();
   const tb = $("#leadRows");
   if (!leads.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`); return; }
+  const _dupTargets = new Set(leads.filter((x) => x.dup_of && x.status !== "duplicate").map((x) => x.dup_of));
   if (setHTML(tb, leads.map((l) => `<tr>
     <td class="sub">${l.id}</td>
     <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
     <td>${l.channel ? `<span class="chip">${esc(l.channel)}</span>` : '<span class="sub">—</span>'}</td>
-    <td>${badge(l.status, l.stage)}</td>
+    <td>${badge(l.status, l.stage)}${l.dup_of && l.status !== "duplicate" ? `<div><span class="dup-flag" title="${esc(l.dup_reason || "")}">possible duplicate of #${l.dup_of}</span></div>` : _dupTargets.has(l.id) ? `<div><span class="dup-flag">possible duplicate — check Duplicates</span></div>` : ""}${l.status === "duplicate" && l.merged_into ? `<div class="sub">merged into #${l.merged_into}</div>` : ""}</td>
     <td>${topMatch(l)}</td>
     <td>${tierChip(l.screening)}</td>
     <td>${l.owner ? `<span class="ae">${esc(l.owner)}</span>` : '<span class="sub">—</span>'}</td>
@@ -117,6 +118,30 @@ async function loadReview() {
     <div><div class="tm-label">${esc(label)}</div>${ch.url ? `<a class="rc-url" href="${ch.url}" target="_blank" rel="noopener">${esc(prettyUrl(ch.url))}</a>` : ""}</div>
     <div class="cand-reason">${esc((l.reasoning || "").slice(0, 180))}</div>
     <div class="rc-actions"><button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button><button class="link-btn" data-open="${l.id}">Details ▸</button></div></div>`; }).join(""))) wireRowButtons(w);
+}
+
+function _dupSide(l, label) {
+  const ch = l.chosen || {}; const li = (ch.url && ch.url.includes("linkedin")) ? ch.url : (l.linkedin || "");
+  const row = (k, v) => v ? `<div class="dk">${k}</div><div class="dv">${esc(v)}</div>` : "";
+  return `<div class="dup-side"><div class="dup-label">${label} · #${l.id}</div><h4>${esc(l.name || "—")}</h4>
+    <div class="dup-grid">${row("Channel", l.channel)}${row("Email", l.email)}${row("Phone", l.phone)}${row("LinkedIn", li ? prettyUrl(li) : "")}${row("Visa", l.visa)}${row("Date", l.lead_date)}${row("Status", l.status)}${row("AE", l.owner)}${row("Message", (l.message || "").slice(0, 220))}</div></div>`;
+}
+async function loadDuplicates() {
+  let pairs = []; try { pairs = (await (await fetch("/api/duplicates")).json()).pairs || []; } catch { return; }
+  $("#dupCount").textContent = pairs.length;
+  const w = $("#dupCards");
+  if (!pairs.length) { setHTML(w, `<div class="review-empty">No possible duplicates to check. 🎉</div>`); return; }
+  if (setHTML(w, pairs.map((p) => `<div class="dup-card">
+      <div class="dup-head"><span class="dup-flag">${esc(p.reason || "possible duplicate")}</span><span class="sub">Are these the same person?</span></div>
+      <div class="dup-pair">${_dupSide(p.other, "Existing")}${_dupSide(p.lead, "New")}</div>
+      <div class="rc-actions"><button class="mini ok" data-same="${p.lead.id}">Same person — merge</button><button class="mini" data-diff="${p.lead.id}">Different people — keep both</button></div>
+    </div>`).join(""))) {
+    w.querySelectorAll("[data-same],[data-diff]").forEach((b) => b.addEventListener("click", async () => {
+      const id = b.dataset.same || b.dataset.diff; b.disabled = true;
+      try { await readResponse(await fetch(`/api/duplicates/${id}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ same: !!b.dataset.same }) })); refresh(); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    }));
+  }
 }
 
 const _IC = 'width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
@@ -139,6 +164,8 @@ let _spark = sparkline([1, 1]), _trend = { text: "", cls: "trend" };
 async function loadStats() {
   const st = await (await fetch("/api/status")).json();
   const { stats, running, providers } = st;
+  if (st.aes) _aes = st.aes;
+  $("#dupCount").textContent = st.duplicate_checks || 0;
   const tot = stats.total || 0, pct = (n) => (tot ? ((n / tot) * 100).toFixed(1) + "%" : "0%");
   const tiles = [
     { c: "total", ic: ICONS.people, title: "Total Leads", badge: `<span id="trendTotal" class="${_trend.cls}">${_trend.text}</span>`, num: tot, sub: `${stats.queued || 0} queued · ${stats.processing || 0} processing` },
@@ -273,7 +300,10 @@ async function openDrawer(id) {
   const hs = scr.tier || scr.answer || scr.note || scr.error;
   const screen = hs ? `<h3>Screening verdict (RAG fit-eval)</h3>${scr.tier ? `<div class="sub" style="margin-bottom:8px"><span class="tier ${esc(scr.tier)}">${esc(scr.tier)}</span> ${esc(scr.confidence || "")}</div>` : ""}<div class="kv">${kv("Best path", scr.best_path)}${kv("Backup path", scr.backup_path)}${kv("Key strength", scr.key_strength)}${kv("Red flag", scr.red_flag)}${kv("Flip trigger", scr.flip_trigger)}${kv("Matched cases", scr.matched_cases)}${kv("Note", scr.note)}${kv("Error", scr.error)}</div>${scr.answer ? `<div class="cand-reason" style="white-space:pre-wrap;margin-top:8px">${esc(scr.answer)}</div>` : ""}` : "";
   $("#drawerBody").innerHTML = `<h2>${esc(lead.name || "Lead #" + lead.id)}</h2>
-    <div class="sub">${badge(lead.status, lead.stage)}${lead.owner ? ` · AE: <b>${esc(lead.owner)}</b>` : ""}${lead.channel ? ` · ${esc(lead.channel)}` : ""}</div>
+    <div class="sub">${badge(lead.status, lead.stage)}${lead.channel ? ` · ${esc(lead.channel)}` : ""}</div>
+    ${lead.status === "duplicate" ? `<div class="dup-note">Merged into lead #${lead.merged_into}. ${esc(lead.dup_reason || "")}</div>` : `<div class="ae-pick"><span class="k">AE</span><select id="aeSelect"><option value="">${lead.owner ? "" : "— not assigned yet —"}</option>${_aes.map((a) => `<option ${a === lead.owner ? "selected" : ""}>${esc(a)}</option>`).join("")}</select><span id="aeMsg" class="sub"></span></div>`}
+    ${(lead.merged_from || []).length ? `<div class="dup-note">Combined with duplicate lead${lead.merged_from.length > 1 ? "s" : ""} ${lead.merged_from.map((x) => "#" + x).join(", ")} (same person from another channel).</div>` : ""}
+    ${lead.dup_of && lead.status !== "duplicate" ? `<div class="dup-note warn">Possible duplicate of #${lead.dup_of} (${esc(lead.dup_reason || "")}) — both leads are held back from the Pipedrive sheet. Decide on the <a href="#duplicates" onclick="closeDrawer()">Duplicates</a> page.</div>` : ""}
     ${screen}<h3>Raw input</h3><div class="kv">${kv("Company", lead.company)}${kv("Email", lead.email)}${kv("Phone", lead.phone)}${kv("LinkedIn", lead.li_optout ? "Lead says they don't have one (LinkedIn search skipped, not screened)" : lead.linkedin)}${kv("Link given", lead.other_link)}${lead.link_raw && lead.link_raw !== lead.linkedin && lead.link_raw !== lead.other_link ? kv("Typed as", lead.link_raw) : ""}${kv("Visa", lead.visa)}${kv("Message", lead.message)}</div>
     ${ex.location || ex.role_guess || ex.school || ex.notes ? `<h3>Extracted &amp; enriched</h3><div class="kv">${kv("Company", ex.company)}${kv("School", ex.school)}${kv("Location", ex.location)}${kv("Role guess", ex.role_guess)}${kv("Notes", ex.notes)}</div>${(ex.keywords || []).length ? `<div class="tags" style="margin-top:8px">${ex.keywords.map((k) => `<span class="tag">${esc(k)}</span>`).join("")}</div>` : ""}` : ""}
     ${lead.queries ? `<h3>Search queries</h3><div class="tags">${lead.queries.map((q) => `<span class="tag">${esc(q)}</span>`).join("")}</div>` : ""}
@@ -283,6 +313,15 @@ async function openDrawer(id) {
   $("#drawerBody").querySelectorAll("[data-choose]").forEach((b) => b.addEventListener("click", async () => { await fetch(`/api/leads/${id}/choose`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ candidate_index: +b.dataset.choose }) }); closeDrawer(); refresh(); }));
   const rej = $("#rejectBtn"); if (rej) rej.addEventListener("click", async () => { await fetch(`/api/leads/${id}/reject`, { method: "POST" }); closeDrawer(); refresh(); });
   $("#deleteBtn").addEventListener("click", async () => { if (await deleteLead(id)) closeDrawer(); });
+  const sel = $("#aeSelect");
+  if (sel) sel.addEventListener("change", async () => {
+    if (!sel.value) return; const msg = $("#aeMsg"); msg.textContent = "Saving…";
+    try {
+      const d = await readResponse(await fetch(`/api/leads/${id}/owner`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner: sel.value }) }));
+      msg.textContent = d.synced ? "Saved — updating the Pipedrive sheet and GTM report now." : d.pending_push ? "Saved — goes to the Pipedrive sheet on your next ↑ Push." : "Saved.";
+      refresh();
+    } catch (e) { msg.textContent = e.message; }
+  });
   $("#drawer").classList.add("open");
 }
 function closeDrawer() { $("#drawer").classList.remove("open"); }
@@ -292,7 +331,7 @@ $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") cl
 // ── Boot ────────────────────────────────────────────────────────────────────
 function startPolling() { if (!pollTimer) pollTimer = setInterval(refresh, 2000); }
 function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
-function refresh() { loadStats(); loadLeads(); loadReview(); loadAnalytics(); }
+function refresh() { loadStats(); loadLeads(); loadReview(); loadDuplicates(); loadAnalytics(); }
 setTheme(document.documentElement.dataset.theme || "dark");
 setPage(location.hash.slice(1) || "dashboard");
 refresh();

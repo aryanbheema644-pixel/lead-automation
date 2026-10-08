@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 
-from .. import config, db
+from .. import config, db, dedupe
 from . import distribution, llm, screening
 from .classify import classify
 from .decision import decide
@@ -141,6 +141,7 @@ def process_lead(lead_id: int) -> None:
                 reasoning="LinkedIn URL provided by the lead — no refinement needed.",
                 error=None,
             )
+            dedupe.check_processed(lead_id)
             return
 
         # Step 2 — extract & normalize
@@ -290,6 +291,7 @@ def process_lead(lead_id: int) -> None:
             owner=owner,
             error=None,
         )
+        dedupe.check_processed(lead_id)   # same LinkedIn as an earlier lead -> merge
     except Exception as e:  # noqa: BLE001 — surface any failure on the lead itself
         db.update_lead(lead_id, status="error", stage="failed", error=str(e))
 

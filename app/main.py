@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, gtm, sheets
+from . import config, db, dedupe, gtm, sheets
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -35,6 +35,10 @@ def _startup() -> None:
             orchestrator.start_rescreen(l["id"])
     if requeued and config.SCHEDULER_ENABLED:
         orchestrator.start_worker()
+    if db.meta_get("dedupe_scanned") != "1":
+        # Leads that came in before duplicate handling existed: check them once.
+        db.meta_set("dedupe_scan_result", json.dumps(dedupe.scan_existing()))
+        db.meta_set("dedupe_scanned", "1")
     _start_scheduler()
 
 
@@ -305,6 +309,9 @@ def _insert_row(val, channel: str = "", link: str = "", origin: str = "") -> boo
         channel=_channel_from_tab(row_channel) if row_channel else channel,
         origin=origin,
     )
+    # Same person already here? Same email/LinkedIn -> merged into the earlier
+    # lead now; same name/phone -> flagged for the Duplicates page.
+    dedupe.check_new(lead_id)
     # Every lead stays 'queued'; process_lead routes it:
     #  - provided LinkedIn -> fast path: scrape + screen that URL, no search.
     #  - non-LinkedIn link -> full pipeline, with that link verified as a candidate.
@@ -388,10 +395,14 @@ def _ingest_rows(rows: list[list[str]], dedup: bool = False,
         key, legacy = _dedup_keys(val("name"), val("email"), val("phone"))
         if not key:
             continue            # no name, email or phone: nothing to identify or process
-        if dedup and (key in seen or legacy in seen):
+        # Per-channel key: a repeat on the SAME channel is skipped; the same person
+        # on ANOTHER channel comes in and is merged/flagged by dedupe. Plain keys
+        # (the baselined backlog, older ingests) still count as seen.
+        chan_key = f"{(channel or '').lower()}|{key}"
+        if dedup and (chan_key in seen or key in seen or legacy in seen):
             continue
-        seen.add(key)
-        picked.append((val, key))
+        seen.add(chan_key)
+        picked.append((val, chan_key))
         if limit and len(picked) >= limit:
             break
 
@@ -643,12 +654,32 @@ def _sync_dest() -> dict:
     Source is written only inside a complete appended row, never updated later.
     """
     all_leads = db.list_leads()
-    leads = [l for l in all_leads if l.get("status") == "accepted"
-             or (l.get("status") == "rejected" and l.get("pushed"))]
+    # A doubtful pair holds BOTH leads back until someone decides on the Duplicates page.
+    in_doubt = {l["id"] for l in all_leads if l.get("dup_of") and l.get("status") != "duplicate"}
+    in_doubt |= {l["dup_of"] for l in all_leads if l.get("dup_of") and l.get("status") != "duplicate"}
+    held = [l for l in all_leads if l.get("status") == "accepted" and l["id"] in in_doubt and not l.get("pushed")]
+    leads = [l for l in all_leads if (l.get("status") == "accepted" and l not in held)
+             or (l.get("status") in ("rejected", "duplicate") and l.get("pushed"))]
     out = {"added": 0, "updated": 0, "unchanged": 0, "incomplete": [],
-           "in_review": sum(1 for l in all_leads if l.get("status") == "review")}
+           "in_review": sum(1 for l in all_leads if l.get("status") == "review"),
+           "duplicate_check": len(held)}
+    by_id = {l["id"]: l for l in all_leads}
     pending = []
     for l in leads:
+        if l.get("status") == "duplicate":
+            # Already in the Pipedrive sheet but merged into another lead: only
+            # mark its row; never add it again.
+            snap = l.get("pushed_row") if isinstance(l.get("pushed_row"), dict) else None
+            if not snap:
+                continue
+            p = by_id.get(l.get("merged_into")) or {}
+            f = {**snap, "qualification status":
+                 f"Duplicate of {p.get('name') or '#' + str(l.get('merged_into'))} ({p.get('email') or 'merged'})"}
+            if f != snap:
+                pending.append((l, f, snap))
+            else:
+                out["unchanged"] += 1
+            continue
         if not l.get("owner") and l.get("status") == "accepted":
             l["owner"] = distribution.assign_owner(l)
             db.update_lead(l["id"], owner=l["owner"])
@@ -684,15 +715,19 @@ def _sync_dest() -> dict:
             continue
         row = _find_dest_row(values, cols, l.get("sheet_row"), snap or f)
         if row is None:
-            if l.get("status") == "accepted":
+            if l.get("status") == "accepted" and l["id"] not in in_doubt:
                 to_add.append((l, f))      # deleted from the sheet but changed since
             continue
         # Diff against what we last wrote; for leads pushed before snapshots
         # existed, against what's in the sheet now.
         current = values[row - 1] + [""] * width
         prev = snap or {k: current[i].strip() for k, i in cols.items()}
+        # Source is never edited in place — except when a merge upgraded the
+        # person's channel by priority (e.g. Website -> Meta), and only to a
+        # non-empty value.
         cells += [(row, cols[k] + 1, v) for k, v in f.items()
-                  if k != _SOURCE and k in cols and v != prev.get(k, "")]
+                  if k in cols and v != prev.get(k, "")
+                  and (k != _SOURCE or (v and l.get("merged_from")))]
         located.append((l, f, row))
 
     sheets.write_cells(ws, cells)
@@ -777,6 +812,8 @@ def status() -> JSONResponse:
             "current": current,
             "providers": config.provider_status(),
             "scheduler": _automation_status(),
+            "aes": _ae_names(),
+            "duplicate_checks": sum(1 for l in db.list_leads() if l.get("dup_of") and l.get("status") != "duplicate"),
         }
     )
 
@@ -851,6 +888,71 @@ def reject(lead_id: int) -> JSONResponse:
         fields["owner"] = None             # never reached an AE: free the assignment
     db.update_lead(lead_id, status="rejected",
                    reasoning="Manually rejected by reviewer.", **fields)
+    return JSONResponse({"ok": True})
+
+
+def _ae_names() -> list[str]:
+    """AE names as used in the Owner column (first names), from AE_DIRECTORY."""
+    return [full.split()[0] for _id, full in config.AE_DIRECTORY.values()]
+
+
+def _sync_soon() -> bool:
+    """Push changes of already-pushed leads right away when push automation is
+    playing (or automation is off). If push is paused, the next Push does it."""
+    if config.GOOGLE_DEST_SHEET_ID and not (config.SCHEDULER_ENABLED and _push_paused()):
+        threading.Thread(target=lambda: _safe(_locked_sync), daemon=True).start()
+        return True
+    return False
+
+
+def _safe(fn) -> None:
+    try:
+        fn()
+    except Exception:  # noqa: BLE001 — the next cycle retries
+        pass
+
+
+@app.post("/api/leads/{lead_id}/owner")
+def change_owner(lead_id: int, body: dict) -> JSONResponse:
+    """Reassign a lead's AE. Flows everywhere: the Pipedrive sheet's Owner (AE)
+    Id + Owner Name cells are edited in place, and the GTM report moves the SQL
+    count (-1 old AE, +1 new). Doesn't touch the round-robin."""
+    lead = db.get_lead(lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    want = (body.get("owner") or "").strip()
+    match = [n for n in _ae_names() if n.lower() == want.lower()]
+    if not match:
+        raise HTTPException(400, f"Unknown AE '{want}'. Choose one of: {', '.join(_ae_names())}")
+    if match[0] == lead.get("owner"):
+        return JSONResponse({"ok": True, "owner": match[0], "synced": False})
+    db.update_lead(lead_id, owner=match[0])
+    synced = _sync_soon() if lead.get("pushed") else False
+    return JSONResponse({"ok": True, "owner": match[0], "synced": synced,
+                         "pending_push": bool(lead.get("pushed")) and not synced})
+
+
+@app.get("/api/duplicates")
+def duplicates() -> JSONResponse:
+    """Possible duplicates awaiting a human decision, as (existing, new) pairs."""
+    pairs = []
+    for l in db.list_leads():
+        if l.get("dup_of") and l.get("status") != "duplicate":
+            other = db.get_lead(l["dup_of"])
+            if other:
+                pairs.append({"lead": l, "other": other, "reason": l.get("dup_reason") or ""})
+    return JSONResponse({"pairs": pairs})
+
+
+@app.post("/api/duplicates/{lead_id}/resolve")
+def resolve_duplicate(lead_id: int, body: dict) -> JSONResponse:
+    """{"same": true} merges the pair (newer into the one already in Pipedrive /
+    the earlier one); {"same": false} keeps both and releases the hold."""
+    lead = db.get_lead(lead_id)
+    if not lead or not lead.get("dup_of"):
+        raise HTTPException(404, "No open duplicate check for this lead")
+    dedupe.resolve(lead_id, bool(body.get("same")))
+    _sync_soon()
     return JSONResponse({"ok": True})
 
 
