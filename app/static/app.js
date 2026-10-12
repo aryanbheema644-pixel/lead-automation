@@ -75,9 +75,13 @@ function topMatch(lead) { const c = (lead.candidates || [])[0], ch = lead.chosen
 function tierChip(s) { if (!s || !s.tier) return '<span class="sub">—</span>'; const t = esc(s.tier); return `<span class="tier ${t}">${t}</span>`; }
 function rowActions(l) { let b = ""; if (l.status === "review") b += `<button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button>`; else if (l.status === "accepted") b += `<button class="mini no" data-reject="${l.id}">Reject</button>`; b += `<button class="link-btn" data-open="${l.id}">Details ▸</button><button class="icon-del" data-delete="${l.id}" title="Delete lead" aria-label="Delete lead"><svg width="15" height="15" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`; return `<div class="row-actions">${b}</div>`; }
 // AE column: a dropdown right in the table (merged-away duplicates just show text).
+let _ownerById = {};
 function aeCell(l) {
-  if (l.status === "duplicate" || !_aes.length) return l.owner ? `<span class="ae">${esc(l.owner)}</span>` : '<span class="sub">—</span>';
-  return `<select class="ae-select" data-ae="${l.id}" title="Change AE — updates the Pipedrive sheet and GTM report">${l.owner ? "" : '<option value="" selected>—</option>'}${_aes.map((a) => `<option ${a === l.owner ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>`;
+  // A merged-away duplicate shows (and changes) the merged lead's AE: same person, one AE.
+  const owner = l.status === "duplicate" && l.merged_into ? (_ownerById[l.merged_into] || "") : l.owner;
+  if (!_aes.length) return owner ? `<span class="ae">${esc(owner)}</span>` : '<span class="sub">—</span>';
+  const title = l.status === "duplicate" ? `Same person as #${l.merged_into} — sets #${l.merged_into}'s AE` : "Change AE — updates the Pipedrive sheet and GTM report";
+  return `<select class="ae-select" data-ae="${l.id}" title="${title}">${owner ? "" : '<option value="" selected>—</option>'}${_aes.map((a) => `<option ${a === owner ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>`;
 }
 async function changeAE(id, owner, sel) {
   sel.disabled = true;
@@ -111,12 +115,13 @@ async function loadLeads() {
   if (_rescreening) startPolling();
   const tb = $("#leadRows");
   if (!leads.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`); return; }
+  _ownerById = Object.fromEntries(leads.map((x) => [x.id, x.owner]));
   const _dupTargets = new Set(leads.filter((x) => x.dup_of && x.status !== "duplicate").map((x) => x.dup_of));
   if (setHTML(tb, leads.map((l) => `<tr>
     <td class="sub">${l.id}</td>
     <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
     <td>${l.channel ? `<span class="chip">${esc(l.channel)}</span>` : '<span class="sub">—</span>'}</td>
-    <td>${badge(l.status, l.stage)}${l.dup_of && l.status !== "duplicate" ? `<div><span class="dup-flag" title="${esc(l.dup_reason || "")}">possible duplicate of #${l.dup_of}</span></div>` : _dupTargets.has(l.id) ? `<div><span class="dup-flag">possible duplicate — check Duplicates</span></div>` : ""}${l.status === "duplicate" && l.merged_into ? `<div class="sub">merged into #${l.merged_into}</div>` : ""}</td>
+    <td>${l.status === "duplicate" ? (l.prior_status && l.prior_status !== "queued" ? badge(l.prior_status) : '<span class="badge duplicate">merged on arrival</span>') : badge(l.status, l.stage)}${l.dup_of && l.status !== "duplicate" ? `<div><span class="dup-flag" title="${esc(l.dup_reason || "")}">possible duplicate of #${l.dup_of}</span></div>` : _dupTargets.has(l.id) ? `<div><span class="dup-flag">possible duplicate — check Duplicates</span></div>` : ""}${l.status === "duplicate" && l.merged_into ? `<div class="sub dup-merged">duplicate · merged into #${l.merged_into}</div>` : ""}</td>
     <td>${topMatch(l)}</td>
     <td>${tierChip(l.screening)}</td>
     <td>${aeCell(l)}</td>
@@ -316,7 +321,7 @@ async function openDrawer(id) {
   const screen = hs ? `<h3>Screening verdict (RAG fit-eval)</h3>${scr.tier ? `<div class="sub" style="margin-bottom:8px"><span class="tier ${esc(scr.tier)}">${esc(scr.tier)}</span> ${esc(scr.confidence || "")}</div>` : ""}<div class="kv">${kv("Best path", scr.best_path)}${kv("Backup path", scr.backup_path)}${kv("Key strength", scr.key_strength)}${kv("Red flag", scr.red_flag)}${kv("Flip trigger", scr.flip_trigger)}${kv("Matched cases", scr.matched_cases)}${kv("Note", scr.note)}${kv("Error", scr.error)}</div>${scr.answer ? `<div class="cand-reason" style="white-space:pre-wrap;margin-top:8px">${esc(scr.answer)}</div>` : ""}` : "";
   $("#drawerBody").innerHTML = `<h2>${esc(lead.name || "Lead #" + lead.id)}</h2>
     <div class="sub">${badge(lead.status, lead.stage)}${lead.channel ? ` · ${esc(lead.channel)}` : ""}</div>
-    ${lead.status === "duplicate" ? `<div class="dup-note">Merged into lead #${lead.merged_into}. ${esc(lead.dup_reason || "")}</div>` : `<div class="ae-pick"><span class="k">AE</span><select id="aeSelect"><option value="">${lead.owner ? "" : "— not assigned yet —"}</option>${_aes.map((a) => `<option ${a === lead.owner ? "selected" : ""}>${esc(a)}</option>`).join("")}</select><span id="aeMsg" class="sub"></span></div>`}
+    ${lead.status === "duplicate" ? `<div class="dup-note">${lead.prior_status && lead.prior_status !== "queued" ? `Was <b>${esc(lead.prior_status)}</b>, then merged` : "Merged on arrival"} into lead #${lead.merged_into} (${esc(lead.dup_reason || "")}). Change this person's AE on the Leads table or in lead #${lead.merged_into}.</div>` : `<div class="ae-pick"><span class="k">AE</span><select id="aeSelect"><option value="">${lead.owner ? "" : "— not assigned yet —"}</option>${_aes.map((a) => `<option ${a === lead.owner ? "selected" : ""}>${esc(a)}</option>`).join("")}</select><span id="aeMsg" class="sub"></span></div>`}
     ${(lead.merged_from || []).length ? `<div class="dup-note">Combined with duplicate lead${lead.merged_from.length > 1 ? "s" : ""} ${lead.merged_from.map((x) => "#" + x).join(", ")} (same person from another channel).</div>` : ""}
     ${lead.dup_of && lead.status !== "duplicate" ? `<div class="dup-note warn">Possible duplicate of #${lead.dup_of} (${esc(lead.dup_reason || "")}) — both leads are held back from the Pipedrive sheet. Decide on the <a href="#duplicates" onclick="closeDrawer()">Duplicates</a> page.</div>` : ""}
     ${screen}<h3>Raw input</h3><div class="kv">${kv("Company", lead.company)}${kv("Email", lead.email)}${kv("Phone", lead.phone)}${kv("LinkedIn", lead.li_optout ? "Lead says they don't have one (LinkedIn search skipped, not screened)" : lead.linkedin)}${kv("Link given", lead.other_link)}${lead.link_raw && lead.link_raw !== lead.linkedin && lead.link_raw !== lead.other_link ? kv("Typed as", lead.link_raw) : ""}${kv("Visa", lead.visa)}${kv("Message", lead.message)}</div>

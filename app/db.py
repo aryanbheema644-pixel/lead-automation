@@ -40,6 +40,7 @@ _COLUMNS = {
     "dup_of": "INTEGER",           # open "possible duplicate of lead #N" flag (Duplicates page)
     "dup_reason": "TEXT",          # why it was flagged / merged (same name, same email, …)
     "merged_into": "INTEGER",      # status 'duplicate': merged into lead #N
+    "prior_status": "TEXT",        # status before it was merged away (accepted / rejected / …)
     "merged_from": "TEXT",         # JSON list of lead ids merged into this one
     "visa": "TEXT",
     "lead_date": "TEXT",
@@ -116,6 +117,11 @@ def meta_set(k: str, v: str) -> None:
                      "ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
 
 
+def relabel_channel(old: str, new: str) -> int:
+    with _lock, _conn() as conn:
+        return conn.execute("UPDATE leads SET channel = ? WHERE channel = ?", (new, old)).rowcount
+
+
 def requeue_interrupted() -> int:
     """Leads left mid-pipeline by a restart/deploy go back to the queue."""
     with _lock, _conn() as conn:
@@ -178,7 +184,7 @@ def analytics() -> dict:
         rows = conn.execute(
             "SELECT channel, status, screening, owner, created_at FROM leads").fetchall()
     for r in rows:
-        ch = r["channel"] or "Upload"
+        ch = r["channel"] or "Not provided"
         channels[ch] = channels.get(ch, 0) + 1
         st = r["status"] or "?"
         statuses[st] = statuses.get(st, 0) + 1

@@ -37,6 +37,20 @@ def _startup() -> None:
         orchestrator.start_worker()
     if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
         threading.Thread(target=_fix_old_visas, daemon=True).start()
+    if config.GTM_SHEET_ID and db.meta_get("gtm_date_fix_v1") != "1":
+        # Move counts that landed in future weeks (day/month-swapped source
+        # dates) to the right week. Only re-counts leads already in the
+        # Pipedrive sheet; pushes nothing.
+        def _gtm_fix():
+            try:
+                with _sync_lock:
+                    db.meta_set("gtm_date_fix_result", json.dumps(gtm.sync_report()))
+                db.meta_set("gtm_date_fix_v1", "1")
+            except Exception as e:  # noqa: BLE001 — retried on next start
+                db.meta_set("gtm_date_fix_result", json.dumps({"error": str(e)[:200]}))
+        threading.Thread(target=_gtm_fix, daemon=True).start()
+    db.relabel_channel("Upload", _NO_CHANNEL)
+    dedupe.backfill_prior_status()
     if db.meta_get("dedupe_scanned") != "1":
         # Leads that came in before duplicate handling existed: check them once.
         db.meta_set("dedupe_scan_result", json.dumps(dedupe.scan_existing()))
@@ -332,7 +346,10 @@ def normalize_visa(text: str) -> str:
 
 # Channel -> value for the destination sheet's "Source" column.
 _SOURCE_LABEL = {"Meta": "Meta Ads", "WhatsApp": "WhatsApp", "Website": "Website",
-                 "Google Ads": "Google Ads", "Referral": "Referral", "LinkedIn": "LinkedIn"}
+                 "Google Ads": "Google Ads", "Referral": "Referral", "LinkedIn": "LinkedIn",
+                 "Not provided": "Not provided"}
+# Channel for an uploaded CSV with no channel column (or a blank channel cell).
+_NO_CHANNEL = "Not provided"
 
 
 def _insert_row(val, channel: str = "", link: str = "", origin: str = "") -> bool:
@@ -398,18 +415,58 @@ def _map_columns(rows: list[list[str]]) -> dict:
     """LLM column mapping, cached per header row: the same tab layout maps the
     same way every pull (stable dedup keys) and costs no LLM call after the first."""
     header = [(c or "").strip() for c in rows[0]]
-    ck = "map:" + hashlib.sha1(json.dumps(header).encode()).hexdigest()
+    # "map2:" — mappings cached before column-by-column mapping + validation
+    # existed may be off by one column, so they're ignored.
+    ck = "map2:" + hashlib.sha1(json.dumps(header).encode()).hexdigest()
     cached = db.meta_get(ck)
     if cached:
         try:
             return json.loads(cached)
         except json.JSONDecodeError:
             pass
-    mapping = llm.map_columns(rows[:5])
+    # Header + a few of the NEWEST rows: the oldest rows of a long-running sheet
+    # often have columns that were empty back then (or a different format).
+    sample = [rows[0]] + rows[1:3] + rows[-5:] if len(rows) > 8 else rows[:8]
+    mapping = _validate_mapping(llm.map_columns(sample), rows)
     # Only cache a confident mapping of a real header row.
     if mapping.get("has_header") and (_indices(mapping, "email") or _indices(mapping, "name")):
         db.meta_set(ck, json.dumps(mapping))
     return mapping
+
+
+def _validate_mapping(mapping: dict, rows: list[list[str]]) -> dict:
+    """Drop any mapped field whose actual values don't fit it — a field left
+    empty beats a field filled from the wrong column (e.g. Campaign Name as the
+    channel, the Path column as the date, the message as the visa)."""
+    from .gtm import _parse_date
+    body = rows[1:] if mapping.get("has_header") else rows
+    data = body[:10] + body[-30:]
+
+    def values(key):
+        out = []
+        for r in data:
+            v = " ".join(r[i].strip() for i in _indices(mapping, key) if 0 <= i < len(r) and r[i].strip())
+            if v:
+                out.append(v)
+        return out
+
+    def mostly(vals, ok):
+        return not vals or sum(1 for v in vals if ok(v)) >= 0.6 * len(vals)
+
+    checks = {
+        "channel": lambda v: _channel_from_tab(v) in _SOURCE_LABEL,
+        "date": lambda v: _parse_date(v) is not None,
+        "visa": lambda v: normalize_visa(v) != v or len(v) <= 25,
+        "email": lambda v: "@" in v or "&" in v,
+        "linkedin": lambda v: normalize_visa(v) in (v, _NO_VISA) and not re.fullmatch(r"[\d\s+()-]{7,}", v),
+        "phone": lambda v: len(re.sub(r"\D", "", v)) >= 6 or v.lower() in ("yes", "no"),
+    }
+    out = dict(mapping)
+    for key, ok in checks.items():
+        if _indices(mapping, key) and not mostly(values(key), ok):
+            out[key] = None
+            out.setdefault("_dropped", []).append(key)
+    return out
 
 
 def _ingest_rows(rows: list[list[str]], dedup: bool = False,
@@ -511,7 +568,7 @@ async def upload(file: UploadFile) -> JSONResponse:
     rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
     if not rows:
         raise HTTPException(400, "The CSV is empty.")
-    count, mapping = _ingest_rows(rows, channel="Upload")
+    count, mapping = _ingest_rows(rows, channel=_NO_CHANNEL)
     mapped = {k: mapping.get(k) for k in
               ("name", "company", "email", "phone", "linkedin", "message")}
     return JSONResponse({"inserted": count, "mapped_columns": mapped,
@@ -962,6 +1019,12 @@ def change_owner(lead_id: int, body: dict) -> JSONResponse:
     lead = db.get_lead(lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
+    if lead.get("status") == "duplicate" and lead.get("merged_into"):
+        # Merged away: the person lives on in the merged lead — set the AE there.
+        lead_id = lead["merged_into"]
+        lead = db.get_lead(lead_id)
+        if not lead:
+            raise HTTPException(404, "Merged lead not found")
     want = (body.get("owner") or "").strip()
     match = [n for n in _ae_names() if n.lower() == want.lower()]
     if not match:

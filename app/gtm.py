@@ -55,11 +55,23 @@ def _parse_date(text: str) -> dt.date | None:
 
 
 def lead_day(lead: dict) -> dt.date:
-    """The lead's 'Date of lead', else the day LeadSearch picked it up."""
+    """The lead's 'Date of lead', else the day LeadSearch picked it up.
+
+    A lead can't come from the future: the source sometimes has day and month
+    swapped (a lead from 12 Oct written as "10-Dec"). If the date is after the
+    pickup day, try swapping day/month; if that still doesn't fit, use the
+    pickup day."""
+    picked = dt.datetime.utcfromtimestamp(lead.get("created_at") or 0).date()
     d = _parse_date(lead.get("lead_date", ""))
-    if d:
-        return d
-    return dt.datetime.utcfromtimestamp(lead.get("created_at") or 0).date()
+    if not d:
+        return picked
+    if lead.get("created_at") and d > picked + dt.timedelta(days=1):
+        try:
+            swapped = dt.date(d.year, d.day, d.month)
+        except ValueError:
+            swapped = None
+        return swapped if swapped and swapped <= picked + dt.timedelta(days=1) else picked
+    return d
 
 
 def _desired(lead: dict) -> dict | None:
@@ -192,7 +204,9 @@ def sync_report() -> dict:
     for (r, c), delta in totals.items():
         if delta:
             cur = values[r][c] if c < len(values[r]) else ""
-            writes.append((r + 1, c + 1, _fmt(max(0.0, _num(cur) + delta))))
+            new = max(0.0, _num(cur) + delta)
+            # Taking a count back to zero leaves the cell blank, as it was.
+            writes.append((r + 1, c + 1, _fmt(new) if new else ""))
     if writes:
         sheets.write_cells(ws, writes)
     for l, new, deltas in applied:

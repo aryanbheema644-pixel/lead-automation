@@ -151,6 +151,7 @@ def merge(primary_id: int, dup_id: int, reason: str) -> None:
             fields.update(dup_of=None, dup_reason=None)
         db.update_lead(p["id"], **fields)
         db.update_lead(d["id"], status="duplicate", stage="merged", merged_into=p["id"],
+                       prior_status=d.get("status") if d.get("status") != "duplicate" else d.get("prior_status"),
                        dup_of=None, dup_reason=f"Merged into #{p['id']} — {reason}",
                        owner=d.get("owner") if d.get("pushed") else None)
         # Anything flagged against the retired lead now points at the merged one.
@@ -219,3 +220,18 @@ def scan_existing() -> dict:
             db.update_lead(cur["id"], dup_of=other["id"], dup_reason=reason)
             out["flagged"] += 1
     return out
+
+
+def backfill_prior_status() -> int:
+    """Duplicates merged before prior_status existed: recover what they were from
+    what was pushed to the Pipedrive sheet (only accepted/rejected were pushed)."""
+    n = 0
+    for l in db.list_leads("duplicate"):
+        if l.get("prior_status"):
+            continue
+        snap = l.get("pushed_row") if isinstance(l.get("pushed_row"), dict) else {}
+        qual = (snap.get("qualification status") or "").lower()
+        prior = "rejected" if qual == "rejected" else "accepted" if l.get("pushed") else "queued"
+        db.update_lead(l["id"], prior_status=prior)
+        n += 1
+    return n

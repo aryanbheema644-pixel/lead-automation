@@ -80,9 +80,11 @@ def chat_json(system: str, user: str, *, max_tokens: int = 1500) -> Any:
 # ── Step 0: map arbitrary CSV columns to canonical fields ────────────────
 MAP_SYS = (
     "You map the columns of a leads CSV to a fixed set of canonical fields. "
-    "Input: the first few parsed rows as a JSON array of rows (each row is a list "
-    "of cell strings). For each field, output the 0-based COLUMN INDEX that holds "
-    "it, or null if absent.\n"
+    "Input: the sheet laid out COLUMN BY COLUMN — a JSON list where each entry is "
+    "one column: its \"col\" number, its \"row0\" cell (the header, if the sheet has "
+    "one) and \"values\" (the next few rows). For each field, output the \"col\" "
+    "number of the column that holds it, or null if absent. Copy the col number "
+    "from the entry — never count positions yourself.\n"
     "FIELDS:\n"
     "- name: the person's full name. If given-name and surname are in SEPARATE "
     "columns, return a LIST of indices to join in order (e.g. [0,1]).\n"
@@ -111,9 +113,11 @@ MAP_SYS = (
     "3. Ignore unrelated columns (dates, times, status, visa type, deal/opportunity "
     "title, source, owner, tags, IDs, etc).\n"
     "4. Pick the single best column per field; use null if none fits.\n"
-    "EXAMPLE INPUT: [[\"Person - First name\",\"Surname\",\"Email\",\"Deal - Title\","
-    "\"LinkedIn\",\"Notes\"],[\"Gauri\",\"Bansal\",\"gb@nyu.edu\",\"O1 Visa\","
-    "\"linkedin.com/in/gauribansal\",\"Exec Director at Acme, exploring O-1A\"]]\n"
+    "EXAMPLE INPUT: [{\"col\":0,\"row0\":\"Person - First name\",\"values\":[\"Gauri\"]},"
+    "{\"col\":1,\"row0\":\"Surname\",\"values\":[\"Bansal\"]},{\"col\":2,\"row0\":\"Email\","
+    "\"values\":[\"gb@nyu.edu\"]},{\"col\":3,\"row0\":\"Deal - Title\",\"values\":[\"O1 Visa\"]},"
+    "{\"col\":4,\"row0\":\"LinkedIn\",\"values\":[\"linkedin.com/in/gauribansal\"]},"
+    "{\"col\":5,\"row0\":\"Notes\",\"values\":[\"Exec Director at Acme, exploring O-1A\"]}]\n"
     "EXAMPLE OUTPUT: {\"has_header\": true, \"name\": [0,1], \"company\": null, "
     "\"email\": 2, \"phone\": null, \"linkedin\": 4, \"message\": 5}\n"
     "(company is null there because 'Exec Director at Acme...' is a sentence = the "
@@ -128,9 +132,18 @@ MAP_SCHEMA = (
 
 
 def map_columns(sample_rows: list[list[str]]) -> dict:
-    """Ask the LLM which columns map to which canonical field (one call/upload)."""
+    """Ask the LLM which columns map to which canonical field (one call/upload).
+    The sample is sent column by column with explicit numbers: asked to count
+    positions in a wide row (e.g. 23 columns) the model drifts by one."""
+    rows = sample_rows[:8]
+    width = max((len(r) for r in rows), default=0)
+    cols = []
+    for j in range(width):
+        cells = [(r[j] if j < len(r) else "").strip()[:80] for r in rows]
+        if any(cells):
+            cols.append({"col": j, "row0": cells[0], "values": cells[1:]})
     user = (
-        f"Rows (row 0 first):\n{json.dumps(sample_rows[:5], ensure_ascii=False)}\n\n"
+        f"Columns:\n{json.dumps(cols, ensure_ascii=False)}\n\n"
         f"Return JSON with exactly these keys: {MAP_SCHEMA}."
     )
     out = chat_json(MAP_SYS, user, max_tokens=300)

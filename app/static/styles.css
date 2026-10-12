@@ -296,3 +296,4 @@ table.leads { width: 100%; border-collapse: collapse; }
 .ae-pick select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; font-size: 13px; }
 .badge.duplicate { background: var(--chip); color: var(--muted); }
 @media (max-width: 980px) { .dup-pair { grid-template-columns: minmax(0, 1fr); } }
+.dup-merged { margin-top: 3px; }
