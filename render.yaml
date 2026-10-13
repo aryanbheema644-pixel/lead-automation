@@ -33,7 +33,7 @@ services:
         sync: false
       # --- non-secret defaults (edit in dashboard anytime) ---
       - key: OPENROUTER_MODEL
-        value: anthropic/claude-haiku-5.5
+        value: anthropic/claude-sonnet-5.5
       - key: APIFY_LINKEDIN_ACTOR
         value: harvestapi/linkedin-profile-scraper
       - key: APIFY_LINKEDIN_SEARCH_ACTOR

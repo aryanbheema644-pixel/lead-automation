@@ -45,11 +45,11 @@ def _get_int(name: str, default: int) -> int:
 
 # LLM (OpenRouter, OpenAI-compatible)
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = _get("OPENROUTER_MODEL", "anthropic/claude-haiku-5.5")
-# Cheaper model for the simple jobs (column matching, link repair, extracting
-# lead details, writing search queries). OPENROUTER_MODEL stays on matching a
-# candidate profile to the lead, where accuracy matters most.
-OPENROUTER_MODEL_FAST = _get("OPENROUTER_MODEL_FAST", "anthropic/claude-haiku-5.5")
+OPENROUTER_MODEL = _get("OPENROUTER_MODEL", "anthropic/claude-sonnet-5.5")
+# Cheaper model for the simple jobs (link repair, extracting lead details,
+# writing search queries). OPENROUTER_MODEL handles what has to be right:
+# matching a candidate profile to the lead, and column matching on uploads.
+OPENROUTER_MODEL_FAST = _get("OPENROUTER_MODEL_FAST", "openai/gpt-6-luna")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_APP_URL = _get("OPENROUTER_APP_URL", "http://localhost:8000")
 OPENROUTER_APP_NAME = _get("OPENROUTER_APP_NAME", "LeadSearch")

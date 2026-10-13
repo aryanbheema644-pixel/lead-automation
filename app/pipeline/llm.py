@@ -162,7 +162,7 @@ def map_columns(sample_rows: list[list[str]]) -> dict:
         f"Columns:\n{json.dumps(cols, ensure_ascii=False)}\n\n"
         f"Return JSON with exactly these keys: {MAP_SCHEMA}."
     )
-    out = chat_json(MAP_SYS, user, max_tokens=300, fast=True)
+    out = chat_json(MAP_SYS, user, max_tokens=300)   # accuracy matters: main model
     return out if isinstance(out, dict) else {}
 
 
