@@ -58,24 +58,39 @@ def chat_json(system: str, user: str, *, max_tokens: int = 1500, fast: bool = Fa
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    try:
-        with httpx.Client(timeout=90) as client:
-            r = client.post(
-                f"{config.OPENROUTER_BASE_URL}/chat/completions",
-                headers=_headers(),
-                json=payload,
-            )
-    except httpx.HTTPError as e:
-        raise LLMError(f"OpenRouter request failed: {e}") from e
-
-    if r.status_code != 200:
-        raise LLMError(f"OpenRouter {r.status_code}: {r.text[:300]}")
-    data = r.json()
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as e:
-        raise LLMError(f"Unexpected OpenRouter response: {data}") from e
-    return _extract_json(content)
+    # One retry: providers occasionally return an empty, truncated or non-JSON
+    # reply; a second attempt almost always comes back clean.
+    last_err: Exception | None = None
+    for _attempt in range(2):
+        try:
+            with httpx.Client(timeout=90) as client:
+                r = client.post(
+                    f"{config.OPENROUTER_BASE_URL}/chat/completions",
+                    headers=_headers(),
+                    json=payload,
+                )
+        except httpx.HTTPError as e:
+            last_err = LLMError(f"OpenRouter request failed: {e}")
+            continue
+        if r.status_code != 200:
+            last_err = LLMError(f"OpenRouter {r.status_code}: {r.text[:300]}")
+            if r.status_code in (400, 401, 402, 403):
+                break                     # bad request / auth / credits: retrying won't help
+            continue
+        data = r.json()
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            last_err = LLMError(f"Unexpected OpenRouter response: {str(data)[:300]}")
+            continue
+        if not (content or "").strip():
+            last_err = LLMError("OpenRouter returned an empty reply")
+            continue
+        try:
+            return _extract_json(content)
+        except (LLMError, json.JSONDecodeError) as e:
+            last_err = LLMError(f"LLM reply wasn't valid JSON: {str(e)[:200]}")
+    raise last_err or LLMError("OpenRouter call failed")
 
 
 # ── Step 0: map arbitrary CSV columns to canonical fields ────────────────
