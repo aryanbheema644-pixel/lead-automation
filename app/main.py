@@ -604,9 +604,36 @@ def _map_columns(rows: list[list[str]], origin: str = "upload", label: str = "")
         if not by_header and "has_header" in ai:
             mapping["has_header"] = bool(ai["has_header"]) and has_header
     mapping = _validate_mapping(mapping, rows)
+    if not _indices(mapping, "name"):
+        guess = _name_column(data, {i for k, v in mapping.items() if k != "has_header"
+                                    for i in _indices(mapping, k)})
+        if guess is not None:
+            mapping["name"] = guess
     if _indices(mapping, "email") or _indices(mapping, "name"):
         db.meta_set(ck, json.dumps(mapping))
     return mapping
+
+
+_NAME_RE = re.compile(r"[^\W\d_]+(?:[ '\-.][^\W\d_]+){0,4}\.?")
+
+
+def _name_column(data: list[list[str]], used: set) -> int | None:
+    """Rule for the name column when the model gives none: values that look like
+    person names (1–5 words of letters; no digits, @, links), mostly unique.
+    Prefers the leftmost such column (names usually come first)."""
+    rows = data[:40]
+    width = max((len(r) for r in rows), default=0)
+    for j in range(width):
+        if j in used:
+            continue
+        vals = [r[j].strip() for r in rows if j < len(r) and r[j].strip()]
+        if len(vals) < max(1, 0.6 * len(rows)):
+            continue
+        hits = [v for v in vals if len(v) <= 60 and _NAME_RE.fullmatch(v)
+                and normalize_visa(v) == v and _channel_from_tab(v) not in _SOURCE_LABEL]
+        if len(hits) >= 0.7 * len(vals) and len(set(hits)) >= 0.6 * len(hits):
+            return j
+    return None
 
 
 def _value_mapping(data: list[list[str]], exclude: set) -> dict:

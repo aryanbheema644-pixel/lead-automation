@@ -45,10 +45,11 @@ def _extract_json(text: str) -> Any:
     raise LLMError(f"LLM did not return valid JSON: {text[:200]}")
 
 
-def chat_json(system: str, user: str, *, max_tokens: int = 1500) -> Any:
-    """One chat completion, expected to return a JSON object."""
+def chat_json(system: str, user: str, *, max_tokens: int = 1500, fast: bool = False) -> Any:
+    """One chat completion, expected to return a JSON object. fast=True uses the
+    cheaper OPENROUTER_MODEL_FAST (simple jobs); otherwise OPENROUTER_MODEL."""
     payload = {
-        "model": config.OPENROUTER_MODEL,
+        "model": config.OPENROUTER_MODEL_FAST if fast else config.OPENROUTER_MODEL,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -146,7 +147,7 @@ def map_columns(sample_rows: list[list[str]]) -> dict:
         f"Columns:\n{json.dumps(cols, ensure_ascii=False)}\n\n"
         f"Return JSON with exactly these keys: {MAP_SCHEMA}."
     )
-    out = chat_json(MAP_SYS, user, max_tokens=300)
+    out = chat_json(MAP_SYS, user, max_tokens=300, fast=True)
     return out if isinstance(out, dict) else {}
 
 
@@ -182,7 +183,7 @@ def clean_links(cells: list[str]) -> dict[int, str]:
         f"Items:\n{json.dumps(items, ensure_ascii=False)}\n\n"
         'Return JSON: {"links": [{"i": int, "url": str}]} with one entry per item.'
     )
-    out = chat_json(LINKS_SYS, user, max_tokens=60 * len(cells) + 200)
+    out = chat_json(LINKS_SYS, user, max_tokens=60 * len(cells) + 200, fast=True)
     result = {}
     for it in (out.get("links") if isinstance(out, dict) else None) or []:
         try:
@@ -224,7 +225,7 @@ def extract_fields(lead: dict) -> dict:
         f"Return JSON with exactly these keys: {EXTRACT_SCHEMA}. "
         f"Use empty string / empty list when unknown."
     )
-    return chat_json(EXTRACT_SYS, user)
+    return chat_json(EXTRACT_SYS, user, fast=True)
 
 
 # ── Step 3: generate search queries ──────────────────────────────────────
@@ -242,7 +243,7 @@ def generate_queries(extracted: dict, n: int = 5) -> list[str]:
         f'Return JSON: {{"queries": [str]}} with {n} distinct queries, most '
         f"specific first."
     )
-    out = chat_json(QUERY_SYS, user)
+    out = chat_json(QUERY_SYS, user, fast=True)
     queries = out.get("queries") if isinstance(out, dict) else None
     if not queries:
         # Fallback to a couple of deterministic queries.
