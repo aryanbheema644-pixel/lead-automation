@@ -25,8 +25,12 @@ def _sc(c: dict) -> float:
 
 
 def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
+    # Not finding someone online isn't a reason to drop the lead — sparse leads
+    # (just a name, email and phone) often have no findable profile. Those go to
+    # review; only a human rejects a lead.
     if not candidates:
-        return "rejected", 0.0, "No candidates found for this lead.", None
+        return "review", 0.0, ("No online profile found from the details given — "
+                               "check manually (accept as-is, or reject)."), None
 
     lis = [c for c in candidates if c.get("source_type") == "linkedin"]
     best_li = max(lis, key=_sc) if lis else None
@@ -64,5 +68,6 @@ def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
         return "accepted", _sc(best_any), best_any.get("reasoning", ""), best_any
     if _sc(best_any) >= config.REVIEW_THRESHOLD:
         return "review", _sc(best_any), best_any.get("reasoning", ""), best_any
-    return ("rejected", _sc(best_any),
-            best_any.get("reasoning", "") or "Best match below review threshold.", None)
+    return ("review", _sc(best_any),
+            "No confident match online (best was %.2f) — check the candidates, or accept "
+            "as-is / reject. %s" % (_sc(best_any), best_any.get("reasoning", "") or ""), None)

@@ -33,11 +33,32 @@ filedrop.addEventListener("dragover", (e) => { e.preventDefault(); filedrop.clas
 filedrop.addEventListener("dragleave", () => filedrop.classList.remove("drag"));
 filedrop.addEventListener("drop", (e) => { e.preventDefault(); filedrop.classList.remove("drag"); if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]); });
 fileInput.addEventListener("change", () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+const _FD_IDLE = { icon: "⬆", text: "Drop a leads CSV or <b>browse</b>", hint: "or use ↓ Pull to read from Google Sheets" };
+function setDrop(state, icon, text, hint) {
+  filedrop.classList.remove("busy", "done", "fail"); if (state) filedrop.classList.add(state);
+  $("#fdIcon").innerHTML = icon; $("#fdText").innerHTML = text; $("#fdHint").innerHTML = hint;
+}
+let _uploading = false, _dropReset = null;
 async function uploadFile(file) {
+  if (_uploading) return;
+  _uploading = true; clearTimeout(_dropReset);
+  // The drop box is on the Pipeline page, so it shows the progress itself.
+  setDrop("busy", '<span class="fd-spinner"></span>', `Uploading <b>${esc(file.name)}</b> — reading the columns and adding leads…`, "This takes a few seconds. Please keep this page open.");
   const m = $("#uploadMsg"); m.className = "msg"; m.textContent = `Uploading ${file.name}…`;
   const fd = new FormData(); fd.append("file", file);
-  try { const d = await readResponse(await fetch("/api/upload", { method: "POST", body: fd })); m.className = "msg ok"; m.textContent = `Added ${d.inserted} leads${(d.blocks || []).length > 1 ? ` (${d.blocks.length} different column layouts detected and mapped separately)` : ""}. Click “Run pipeline”.`; refresh(); }
-  catch (e) { m.className = "msg err"; m.textContent = e.message; }
+  try {
+    const d = await readResponse(await fetch("/api/upload", { method: "POST", body: fd }));
+    const blocks = (d.blocks || []).length > 1 ? ` · ${d.blocks.length} different column layouts detected and mapped separately` : "";
+    setDrop("done", "✓", `Added <b>${d.inserted}</b> lead${d.inserted === 1 ? "" : "s"} from ${esc(file.name)}${blocks}`, `<a href="#leads" class="fd-link">View leads →</a> · then click ▶ Run pipeline`);
+    m.className = "msg ok"; m.textContent = `Added ${d.inserted} leads${blocks}. Click “Run pipeline”.`;
+    refresh();
+  } catch (e) {
+    setDrop("fail", "⚠", `Upload failed: ${esc(e.message)}`, "Fix the file and drop it again.");
+    m.className = "msg err"; m.textContent = e.message;
+  } finally {
+    _uploading = false; fileInput.value = "";
+    _dropReset = setTimeout(() => setDrop("", _FD_IDLE.icon, _FD_IDLE.text, _FD_IDLE.hint), 12000);
+  }
 }
 $("#runBtn").addEventListener("click", async () => { const b = $("#runBtn"); b.disabled = true; try { const d = await readResponse(await fetch("/api/run", { method: "POST" })); $("#uploadMsg").className = "msg ok"; $("#uploadMsg").textContent = `Processing ${d.queued} queued leads…`; startPolling(); } catch (e) { $("#uploadMsg").className = "msg err"; $("#uploadMsg").textContent = e.message; } finally { setTimeout(() => (b.disabled = false), 1500); } });
 $("#resetBtn").addEventListener("click", async () => { if (!confirm("Delete all leads and results?")) return; await fetch("/api/reset", { method: "POST" }); refresh(); });
@@ -104,7 +125,9 @@ async function deleteLead(id) {
   try { await readResponse(await fetch(`/api/leads/${id}`, { method: "DELETE" })); } catch (e) { alert(e.message); return false; }
   refresh(); return true;
 }
-async function acceptTop(id) { await fetch(`/api/leads/${id}/choose`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ candidate_index: 0 }) }); refresh(); }
+// Accept keeps the lead's own chosen profile (or none, when nothing was found
+// online) — picking a different candidate is done in Details.
+async function acceptTop(id) { try { await readResponse(await fetch(`/api/leads/${id}/accept`, { method: "POST" })); } catch (e) { alert(e.message); } refresh(); }
 async function rejectLead(id) { await fetch(`/api/leads/${id}/reject`, { method: "POST" }); refresh(); }
 
 // ── Views ───────────────────────────────────────────────────────────────────

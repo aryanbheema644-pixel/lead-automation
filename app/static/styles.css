@@ -174,6 +174,14 @@ h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -0.03em; }
 .filedrop:hover, .filedrop.drag { border-color: var(--accent); background: var(--panel-2); }
 .filedrop-icon { font-size: 22px; }
 .filedrop-text { font-size: 14px; } .filedrop-hint { font-size: 12px; color: var(--muted); }
+.filedrop.busy { pointer-events: none; border-style: solid; border-color: var(--accent); background: var(--panel-2); }
+.filedrop.done { border-style: solid; border-color: var(--good); }
+.filedrop.done .filedrop-icon { color: var(--good); }
+.filedrop.fail { border-style: solid; border-color: var(--bad); }
+.filedrop.fail .filedrop-text { color: var(--bad); }
+.fd-spinner { display: inline-block; width: 22px; height: 22px; border: 2.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+.fd-link { color: var(--accent); font-weight: 600; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) { .fd-spinner { animation-duration: 2.4s; } }
 .pipeline { padding: 20px 24px 12px; overflow: hidden; }
 .pipeline-head { display: flex; justify-content: space-between; align-items: baseline; }
 .pipeline-title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }

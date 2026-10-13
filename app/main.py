@@ -1119,6 +1119,21 @@ def lead_detail(lead_id: int) -> JSONResponse:
     return JSONResponse(lead)
 
 
+@app.post("/api/leads/{lead_id}/accept")
+def accept_as_is(lead_id: int) -> JSONResponse:
+    """Accept a review lead as it is — keeping its chosen profile if it has one,
+    or with no profile when nothing was found online. Assigns the AE."""
+    lead = db.get_lead(lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    fields = {}
+    if not lead.get("owner"):
+        fields["owner"] = distribution.assign_owner(lead)
+    db.update_lead(lead_id, status="accepted",
+                   reasoning="Accepted by reviewer. " + (lead.get("reasoning") or ""), **fields)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/leads/{lead_id}/choose")
 def choose(lead_id: int, body: dict) -> JSONResponse:
     lead = db.get_lead(lead_id)

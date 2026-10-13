@@ -251,9 +251,9 @@ def process_lead(lead_id: int) -> None:
         # Step 8 — decide (LinkedIn-priority logic; returns the chosen profile)
         status, confidence, reasoning, chosen = decide(candidates)
 
-        # The lead gave us their own link but nothing verified well enough: don't
-        # reject someone over their own link — send it to review for a human.
-        if status == "rejected" and provided_other:
+        # The lead gave us their own link but nothing verified well enough: put
+        # that link up for review as the profile to check.
+        if status == "review" and not chosen and provided_other:
             prov = next((c for c in candidates if c.get("provided")), None)
             if prov:
                 status, chosen = "review", prov
