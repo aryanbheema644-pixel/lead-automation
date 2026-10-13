@@ -35,6 +35,13 @@ def _startup() -> None:
             orchestrator.start_rescreen(l["id"])
     if requeued and config.SCHEDULER_ENABLED:
         orchestrator.start_worker()
+    if db.meta_get("start_after_v1") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
+        try:
+            db.meta_set("start_after_result", json.dumps(_start_after_rows()))
+            db.meta_set("start_after_v1", "1")
+        except Exception as e:  # noqa: BLE001 — pause pulls rather than risk the backlog
+            db.meta_set("sched_paused", "1")
+            db.meta_set("start_after_result", json.dumps({"error": str(e)[:200]}))
     if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
         threading.Thread(target=_fix_old_visas, daemon=True).start()
     if config.GTM_SHEET_ID and db.meta_get("gtm_date_fix_v1") != "1":
@@ -56,6 +63,50 @@ def _startup() -> None:
         db.meta_set("dedupe_scan_result", json.dumps(dedupe.scan_existing()))
         db.meta_set("dedupe_scanned", "1")
     _start_scheduler()
+
+
+# One-off (2026-10-13, user request): the automation starts AFTER these sheet
+# rows. Everything up to them was handled by CSV upload; everything after them
+# is new. Runs once (meta flag), before the scheduler starts.
+_START_AFTER_ROWS = {"Website": 4321, "WhatsApp": 1392, "Meta": 2854}
+
+
+def _start_after_rows() -> dict:
+    out = {}
+    with db._lock, db._conn() as conn:
+        seen = {r["k"] for r in conn.execute("SELECT k FROM seen_leads")}
+    mark, unmark = set(), set()
+    for title, rows in sheets.read_source_tabs():
+        ch = _channel_from_tab(title)
+        cut = _START_AFTER_ROWS.get(ch)
+        if not cut or not rows:
+            continue
+        mapping = _sheet_mapping(rows, title)
+        before, after = set(), []
+        for n, r in enumerate(rows, start=1):
+            if n == 1 or not any((c or "").strip() for c in r):
+                continue
+            val = lambda k, _r=r: " ".join(_r[i].strip() for i in _indices(mapping, k)
+                                           if 0 <= i < len(_r) and _r[i].strip())
+            key, legacy = _dedup_keys(val("name"), val("email"), val("phone"))
+            if not key:
+                continue
+            ck = f"{ch.lower()}|{key}"
+            if n <= cut:
+                before.add(ck)
+            else:
+                after.append((ck, key, legacy))
+        # Anyone with a row after the cutoff gets pulled — even if they also had
+        # an earlier row (that one comes in too and the two merge into one lead).
+        after_keys = {ck for ck, _, _ in after}
+        mark |= before - after_keys
+        for ck, key, legacy in after:
+            unmark |= {ck, key, legacy}
+        out[ch] = {"up_to_row": cut, "marked_seen": len(before), "to_pull": len(after)}
+    db.mark_seen(sorted(mark))
+    with db._lock, db._conn() as conn:
+        conn.executemany("DELETE FROM seen_leads WHERE k = ?", [(k,) for k in unmark if k in seen])
+    return out
 
 
 def _fix_old_visas() -> None:
