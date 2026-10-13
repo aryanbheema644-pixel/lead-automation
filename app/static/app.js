@@ -36,7 +36,7 @@ fileInput.addEventListener("change", () => { if (fileInput.files.length) uploadF
 async function uploadFile(file) {
   const m = $("#uploadMsg"); m.className = "msg"; m.textContent = `Uploading ${file.name}…`;
   const fd = new FormData(); fd.append("file", file);
-  try { const d = await readResponse(await fetch("/api/upload", { method: "POST", body: fd })); m.className = "msg ok"; m.textContent = `Added ${d.inserted} leads. Click “Run pipeline”.`; refresh(); }
+  try { const d = await readResponse(await fetch("/api/upload", { method: "POST", body: fd })); m.className = "msg ok"; m.textContent = `Added ${d.inserted} leads${(d.blocks || []).length > 1 ? ` (${d.blocks.length} different column layouts detected and mapped separately)` : ""}. Click “Run pipeline”.`; refresh(); }
   catch (e) { m.className = "msg err"; m.textContent = e.message; }
 }
 $("#runBtn").addEventListener("click", async () => { const b = $("#runBtn"); b.disabled = true; try { const d = await readResponse(await fetch("/api/run", { method: "POST" })); $("#uploadMsg").className = "msg ok"; $("#uploadMsg").textContent = `Processing ${d.queued} queued leads…`; startPolling(); } catch (e) { $("#uploadMsg").className = "msg err"; $("#uploadMsg").textContent = e.message; } finally { setTimeout(() => (b.disabled = false), 1500); } });

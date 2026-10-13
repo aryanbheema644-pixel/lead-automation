@@ -32,7 +32,8 @@ from gspread.utils import rowcol_to_a1
 
 from . import config, db, sheets
 
-_DATE_FORMATS = ("%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%m/%d/%y", "%d %b %Y", "%b %d, %Y")
+_DATE_FORMATS = ("%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%m/%d/%y", "%d %b %Y", "%b %d, %Y",
+                 "%m-%d-%Y")
 
 
 def _parse_date(text: str) -> dt.date | None:

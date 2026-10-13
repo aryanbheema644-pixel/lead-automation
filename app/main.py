@@ -68,7 +68,7 @@ def _fix_old_visas() -> None:
             rows = [r for r in rows if any((c or "").strip() for c in r)]
             if not rows:
                 continue
-            mapping = _map_columns(rows)
+            mapping = _sheet_mapping(rows, title)
             ch = _channel_from_tab(title).lower()
             for row in (rows[1:] if mapping.get("has_header") else rows):
                 def val(key: str, _row=row) -> str:
@@ -365,7 +365,10 @@ def _insert_row(val, channel: str = "", link: str = "", origin: str = "") -> boo
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
         other_link=canonical_url(info["other_url"]) or info["other_url"],
         link_raw=raw_link, visa=normalize_visa(val("visa")), lead_date=val("date"),
-        channel=_channel_from_tab(row_channel) if row_channel else channel,
+        # Pulled from a source tab: the tab IS the channel (a column like "Where
+        # have you heard about us" must never override it). Uploads: the row's
+        # channel/source column if present, else "Not provided".
+        channel=(_channel_from_tab(row_channel) if row_channel and origin != "sheet" else channel),
         origin=origin,
     )
     # Same person already here? Same email/LinkedIn -> merged into the earlier
@@ -411,27 +414,187 @@ def _dedup_keys(name: str, email: str, phone: str) -> tuple[str, str]:
     return (f"name:{nm}" if nm else ""), legacy
 
 
-def _map_columns(rows: list[list[str]]) -> dict:
-    """LLM column mapping, cached per header row: the same tab layout maps the
-    same way every pull (stable dedup keys) and costs no LLM call after the first."""
+_EMAIL_RE = re.compile(r"[^@\s]+[@&][^@\s]+\.[a-z]{2,}", re.I)
+
+
+def _row_layout(row: list[str]) -> tuple:
+    """Where a row keeps its email and its date — enough to tell stacked sheet
+    layouts apart (Meta export vs Website form vs WhatsApp chatbot)."""
+    from .gtm import _parse_date
+    email = next((i for i, c in enumerate(row) if _EMAIL_RE.fullmatch((c or "").strip())), None)
+    date = next((i for i, c in enumerate(row) if i != email and _parse_date((c or "").strip())), None)
+    return (email, date)
+
+
+def _layout_signature(rows: list[list[str]]) -> list:
+    from collections import Counter
+    c = Counter(_row_layout(r) for r in rows[:40])
+    return list(c.most_common(1)[0][0]) if c else []
+
+
+def _layout_blocks(rows: list[list[str]]) -> list[list[list[str]]]:
+    """Split an uploaded file into blocks of rows sharing one layout, each with
+    the header row (if any) on top. A plain one-layout file stays one block."""
+    first = rows[0]
+    has_header = not any(_EMAIL_RE.fullmatch((c or "").strip()) for c in first)
+    header, data = ([first], rows[1:]) if has_header else ([], rows)
+    groups: dict = {}
+    for r in data:
+        groups.setdefault(_row_layout(r), []).append(r)
+    # A row whose date couldn't be read joins the biggest block with the same
+    # email position; a row with neither joins the biggest block overall.
+    for key in [k for k in groups if k[1] is None]:
+        same = [k for k in groups if k[0] == key[0] and k[1] is not None]
+        target = max(same, key=lambda k: len(groups[k])) if same else None
+        if target is None and key[0] is None and len(groups) > 1:
+            target = max((k for k in groups if k != key), key=lambda k: len(groups[k]))
+        if target is not None:
+            groups[target] += groups.pop(key)
+    return [header + g for g in groups.values()] or [rows]
+
+
+# Header names -> field, for deterministic mapping (compared lower-cased with
+# spaces collapsed). Covers the source tabs' own headers ("Visa intrested in" is
+# spelled that way in the sheet) and common CSV variants.
+_HEADER_FIELDS = {
+    "name": ["name", "full name", "lead name", "contact name"],
+    "email": ["email", "email address", "e-mail", "e-mail address"],
+    "phone": ["number", "phone", "phone number", "mobile", "mobile number", "whatsapp number",
+              "contact number"],
+    "linkedin": ["linkedin profile url", "linkedin id", "linkedin", "linkedin url", "linkedin profile"],
+    "visa": ["visa intrested in", "visa interested in", "visa type", "visa", "visa interest"],
+    "message": ["message", "notes", "comments", "comment"],
+    "date": ["date of lead", "date od lead", "timestamp", "date", "created", "created at"],
+    "company": ["company name", "company"],
+    "channel": ["channel", "source", "lead source"],
+}
+
+
+def _hdr(h: str) -> str:
+    return " ".join((h or "").lower().replace("\u00a0", " ").split()).strip(" :.-_")
+
+
+def _header_mapping(header: list[str]) -> dict:
+    """Map fields by exact header names. {} for fields not found."""
+    pos = {}
+    for j, h in enumerate(header):
+        pos.setdefault(_hdr(h), j)
+    out = {}
+    for field, names in _HEADER_FIELDS.items():
+        for n in names:
+            if n in pos:
+                out[field] = pos[n]
+                break
+    if "name" not in out and "first name" in pos:
+        out["name"] = [pos["first name"]] + ([pos["last name"]] if "last name" in pos else [])
+    return out
+
+
+def _sheet_mapping(rows: list[list[str]], title: str = "") -> dict:
+    """Automatic pulls: purely deterministic, by the tab's header names — no LLM.
+    A renamed/missing key column stops the pull with a clear error instead of
+    guessing."""
+    mapping = _header_mapping(rows[0] if rows else [])
+    mapping.pop("channel", None)                 # the tab decides the channel
+    missing = [f for f in ("name", "email") if f not in mapping]
+    if missing:
+        raise sheets.SheetsError(
+            f"Tab '{title or '?'}': couldn't find the {' / '.join(missing)} column by its header "
+            f"(headers: {', '.join(h for h in rows[0][:12] if h) if rows else 'none'}). "
+            "Was a column renamed?")
+    mapping["has_header"] = True
+    return mapping
+
+
+def _map_columns(rows: list[list[str]], origin: str = "upload", label: str = "") -> dict:
+    """Which column holds which field.
+
+    Pulls (origin='sheet'): header names only (see _sheet_mapping).
+    Uploads: rules first, LLM only to fill gaps —
+      1. header names, when the file has a header row;
+      2. values, where they're unmistakable: emails, LinkedIn links, phone
+         numbers, dates, visa names, channel labels;
+      3. the LLM (columns sent one by one, already numbered) for what's left,
+         mainly the name / message / company columns;
+    and every answer is checked against the actual values."""
+    if origin == "sheet":
+        return _sheet_mapping(rows, label)
     header = [(c or "").strip() for c in rows[0]]
-    # "map2:" — mappings cached before column-by-column mapping + validation
-    # existed may be off by one column, so they're ignored.
-    ck = "map2:" + hashlib.sha1(json.dumps(header).encode()).hexdigest()
+    sig = _layout_signature(rows[1:] or rows)
+    ck = "map4:" + hashlib.sha1(json.dumps([header, sig]).encode()).hexdigest()
     cached = db.meta_get(ck)
     if cached:
         try:
             return json.loads(cached)
         except json.JSONDecodeError:
             pass
-    # Header + a few of the NEWEST rows: the oldest rows of a long-running sheet
-    # often have columns that were empty back then (or a different format).
-    sample = [rows[0]] + rows[1:3] + rows[-5:] if len(rows) > 8 else rows[:8]
-    mapping = _validate_mapping(llm.map_columns(sample), rows)
-    # Only cache a confident mapping of a real header row.
-    if mapping.get("has_header") and (_indices(mapping, "email") or _indices(mapping, "name")):
+
+    has_header = not any(_EMAIL_RE.fullmatch((c or "").strip()) for c in rows[0])
+    by_header = _header_mapping(header) if has_header else {}
+    if len(by_header) < 2:
+        by_header = {}                         # a lone match is likely a data row, not headers
+    data = rows[1:] if has_header else rows
+    by_value = _value_mapping(data, exclude=set())
+
+    mapping: dict = {"has_header": bool(has_header)}
+    mapping.update({k: v for k, v in by_value.items()})
+    mapping.update(by_header)                  # explicit headers win over value guesses
+    if not all(_indices(mapping, k) for k in ("name", "message", "company")):
+        sample = [rows[0]] + rows[1:3] + rows[-5:] if len(rows) > 8 else rows[:8]
+        try:
+            ai = llm.map_columns(sample)
+        except llm.LLMError:
+            ai = {}
+        used = {i for k, v in mapping.items() if k != "has_header" for i in _indices(mapping, k)}
+        for k in ("name", "message", "company", "phone", "visa", "date", "linkedin", "channel"):
+            if not _indices(mapping, k) and _indices(ai, k) and not set(_indices(ai, k)) & used:
+                mapping[k] = ai[k]
+                used |= set(_indices(ai, k))
+        if not by_header and "has_header" in ai:
+            mapping["has_header"] = bool(ai["has_header"]) and has_header
+    mapping = _validate_mapping(mapping, rows)
+    if _indices(mapping, "email") or _indices(mapping, "name"):
         db.meta_set(ck, json.dumps(mapping))
     return mapping
+
+
+def _value_mapping(data: list[list[str]], exclude: set) -> dict:
+    """Find columns whose VALUES are unmistakable. Each column used once."""
+    from .gtm import _parse_date
+    rows = data[:10] + data[-40:] if len(data) > 50 else data
+    width = max((len(r) for r in rows), default=0)
+
+    def recent_date(v):
+        d = _parse_date(v)
+        return bool(d) and 2015 <= d.year <= 2035
+
+    tests = [   # order matters: stronger signals claim their column first
+        ("email", lambda v: bool(_EMAIL_RE.fullmatch(v))),
+        ("linkedin", lambda v: "linkedin" in v.lower() or "linked.in" in v.lower()),
+        ("date", recent_date),
+        ("phone", lambda v: 7 <= len(re.sub(r"\D", "", v)) <= 15 and re.fullmatch(r"[\d\s+()./-]+", v) is not None),
+        # A visa cell is a short visa name ("EB-2 NIW Visa") or an explicit "not
+        # sure" — never a URL or a sentence that merely mentions a visa.
+        ("visa", lambda v: len(v) <= 40 and not re.search(r"https?:|www\.|/", v)
+                           and (normalize_visa(v) not in (v, "", _NO_VISA)
+                                or bool(re.search(r"not[\s_-]*sure", v, re.I)))),
+        ("channel", lambda v: len(v) <= 30 and not re.search(r"https?:|www\.|\.com|/", v, re.I)
+                              and _channel_from_tab(v) in _SOURCE_LABEL),
+    ]
+    out, used = {}, set(exclude)
+    for field, ok in tests:
+        best, best_hits = None, 0
+        for j in range(width):
+            if j in used:
+                continue
+            vals = [r[j].strip() for r in rows if j < len(r) and r[j].strip()]
+            hits = sum(1 for v in vals if ok(v))
+            if vals and hits >= 0.5 * len(vals) and hits >= max(1, 0.25 * len(rows)) and hits > best_hits:
+                best, best_hits = j, hits
+        if best is not None:
+            out[field] = best
+            used.add(best)
+    return out
 
 
 def _validate_mapping(mapping: dict, rows: list[list[str]]) -> dict:
@@ -454,18 +617,32 @@ def _validate_mapping(mapping: dict, rows: list[list[str]]) -> dict:
         return not vals or sum(1 for v in vals if ok(v)) >= 0.6 * len(vals)
 
     checks = {
-        "channel": lambda v: _channel_from_tab(v) in _SOURCE_LABEL,
+        "channel": lambda v: (len(v) <= 30 and not re.search(r"https?:|www\.|\.com|/", v, re.I)
+                              and _channel_from_tab(v) in _SOURCE_LABEL),
         "date": lambda v: _parse_date(v) is not None,
         "visa": lambda v: normalize_visa(v) != v or len(v) <= 25,
         "email": lambda v: "@" in v or "&" in v,
         "linkedin": lambda v: normalize_visa(v) in (v, _NO_VISA) and not re.fullmatch(r"[\d\s+()-]{7,}", v),
         "phone": lambda v: len(re.sub(r"\D", "", v)) >= 6 or v.lower() in ("yes", "no"),
+        "name": lambda v: "@" not in v and not re.fullmatch(r"[\d\s+()./:-]+", v),
     }
     out = dict(mapping)
     for key, ok in checks.items():
         if _indices(mapping, key) and not mostly(values(key), ok):
             out[key] = None
             out.setdefault("_dropped", []).append(key)
+    if not _indices(out, "channel"):
+        # The model missed it: any column whose values are clearly channels
+        # ("Meta Lead", "Website Lead", "Whatsapp Lead"…) is the channel.
+        width = max((len(r) for r in data), default=0)
+        head = rows[0] if mapping.get("has_header") or not any("@" in c for c in rows[0]) else []
+        named = [j for j in range(width) if j < len(head)
+                 and re.search(r"source|channel", head[j] or "", re.I)]
+        for j in named + [j for j in range(width) if j not in named]:
+            vals = [r[j].strip() for r in data if j < len(r) and r[j].strip()]
+            if len(vals) >= max(1, len(data) // 2) and mostly(vals, checks["channel"]):
+                out["channel"] = j
+                break
     return out
 
 
@@ -479,7 +656,7 @@ def _ingest_rows(rows: list[list[str]], dedup: bool = False,
     if not rows:
         return 0, {}
     try:
-        mapping = _map_columns(rows)
+        mapping = _map_columns(rows, origin, channel)
     except llm.LLMError as e:
         raise HTTPException(400, f"Could not map columns (LLM): {e}")
     data_rows = rows[1:] if mapping.get("has_header") else rows
@@ -542,7 +719,7 @@ def _row_keys(rows: list[list[str]]) -> list[str]:
     if not rows:
         return []
     try:
-        mapping = _map_columns(rows)
+        mapping = _sheet_mapping(rows)
     except llm.LLMError:
         return []
     data_rows = rows[1:] if mapping.get("has_header") else rows
@@ -568,11 +745,18 @@ async def upload(file: UploadFile) -> JSONResponse:
     rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
     if not rows:
         raise HTTPException(400, "The CSV is empty.")
-    count, mapping = _ingest_rows(rows, channel=_NO_CHANNEL)
-    mapped = {k: mapping.get(k) for k in
-              ("name", "company", "email", "phone", "linkedin", "message")}
-    return JSONResponse({"inserted": count, "mapped_columns": mapped,
-                         "header_detected": bool(mapping.get("has_header"))})
+    # A file can be several sheets stacked (e.g. Meta rows, then Website rows,
+    # then WhatsApp rows, each with its own column order). Map each block on its
+    # own instead of forcing one layout on the whole file.
+    count, blocks = 0, []
+    for block in _layout_blocks(rows):
+        n, mapping = _ingest_rows(block, channel=_NO_CHANNEL)
+        count += n
+        blocks.append({"rows": len(block) - (1 if mapping.get("has_header") else 0), "inserted": n,
+                       "mapped_columns": {k: mapping.get(k) for k in
+                                          ("name", "email", "phone", "linkedin", "visa", "date", "channel")},
+                       "ignored": mapping.get("_dropped") or []})
+    return JSONResponse({"inserted": count, "blocks": blocks})
 
 
 # Destination-sheet columns, matched to the sheet BY HEADER NAME (case/space
