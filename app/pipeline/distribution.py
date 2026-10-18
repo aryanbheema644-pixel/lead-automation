@@ -72,11 +72,36 @@ def is_pilot(lead: dict) -> bool:
     return bool(_PILOT_RE.search(blob))
 
 
+def on_leave() -> set[str]:
+    """AEs unticked in "Team on duty" (lower-cased names). Stored in the DB."""
+    import json
+    try:
+        return {n.lower() for n in json.loads(db.meta_get("ae_on_leave", "[]") or "[]")}
+    except (ValueError, TypeError):
+        return set()
+
+
+def set_on_leave(name: str, leave: bool) -> list[str]:
+    import json
+    off = on_leave()
+    (off.add if leave else off.discard)(name.lower())
+    db.meta_set("ae_on_leave", json.dumps(sorted(off)))
+    return sorted(off)
+
+
 def assign_owner(lead: dict) -> str:
-    """Pick the AE for a lead per the distribution rules (advances round-robin)."""
-    if is_latam(lead) and config.AE_LATAM:
-        return config.AE_LATAM[db.next_rr("latam", len(config.AE_LATAM))]
-    if is_pilot(lead) and config.AE_PILOT:
+    """Pick the AE for a lead per the distribution rules (advances round-robin).
+    AEs on leave are skipped: LATAM goes to whichever LATAM AE is on duty (else
+    the normal rotation), pilots to the pilot AE if on duty (else the normal
+    rotation). '' when nobody is on duty — the lead then waits without an AE."""
+    off = on_leave()
+    working = lambda names: [n for n in names if n and n.lower() not in off]
+    latam = working(config.AE_LATAM)
+    if is_latam(lead) and latam:
+        return latam[db.next_rr("latam", len(latam))]
+    if is_pilot(lead) and config.AE_PILOT and config.AE_PILOT.lower() not in off:
         return config.AE_PILOT
-    pool = config.AE_ROUND_ROBIN or ["Unassigned"]
+    pool = working(config.AE_ROUND_ROBIN)
+    if not pool:
+        return ""
     return pool[db.next_rr("normal", len(pool))]

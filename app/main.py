@@ -1174,6 +1174,7 @@ def status() -> JSONResponse:
             "providers": config.provider_status(),
             "scheduler": _automation_status(),
             "aes": _ae_names(),
+            "aes_on_leave": sorted(distribution.on_leave()),
             "duplicate_checks": sum(1 for l in db.list_leads() if l.get("dup_of") and l.get("status") != "duplicate"),
         }
     )
@@ -1286,6 +1287,17 @@ def _safe(fn) -> None:
         fn()
     except Exception:  # noqa: BLE001 — the next cycle retries
         pass
+
+
+@app.post("/api/aes/availability")
+def ae_availability(body: dict) -> JSONResponse:
+    """Tick/untick an AE in "Team on duty". Unticked = on leave: gets no new
+    leads from the round-robin / LATAM / pilot rules. Existing leads unchanged."""
+    name = (body.get("name") or "").strip()
+    if name.lower() not in {n.lower() for n in _ae_names()}:
+        raise HTTPException(400, f"Unknown AE '{name}'")
+    off = distribution.set_on_leave(name, not bool(body.get("available")))
+    return JSONResponse({"on_leave": off})
 
 
 @app.post("/api/leads/{lead_id}/owner")

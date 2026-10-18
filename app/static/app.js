@@ -208,6 +208,7 @@ async function loadStats() {
   const st = await (await fetch("/api/status")).json();
   const { stats, running, providers } = st;
   if (st.aes) { const first = !_aes.length; _aes = st.aes; if (first) loadLeads(); }
+  renderTeam(st.aes || [], st.aes_on_leave || []);
   $("#dupCount").textContent = st.duplicate_checks || 0;
   const tot = stats.total || 0, pct = (n) => (tot ? ((n / tot) * 100).toFixed(1) + "%" : "0%");
   const tiles = [
@@ -233,6 +234,22 @@ async function loadStats() {
   else if (!_rescreening && stats.queued === 0 && stats.processing === 0) stopPolling();
   return running;
 }
+
+// ── Team on duty: untick an AE on leave -> no new leads for them ─────────
+function renderTeam(aes, off) {
+  const offSet = new Set(off.map((x) => x.toLowerCase()));
+  setHTML($("#teamOnDuty"), aes.map((a) => { const on = !offSet.has(a.toLowerCase());
+    return `<li class="${on ? "on" : "off"}"><label title="${on ? "On duty — gets new leads. Untick if on leave." : "On leave — gets no new leads. Tick when back."}"><input type="checkbox" data-ae-duty="${esc(a)}" ${on ? "checked" : ""}/> ${esc(a)}${on ? "" : ' <span class="leave-tag">on leave</span>'}</label></li>`; }).join(""));
+  const n = aes.filter((a) => !offSet.has(a.toLowerCase())).length;
+  $("#teamNote").textContent = !aes.length ? "" : n === 0 ? "Nobody on duty — new leads wait without an AE." : n < aes.length ? `${aes.length - n} on leave · new leads go to the other ${n}` : "";
+}
+document.addEventListener("change", async (e) => {
+  const cb = e.target.closest && e.target.closest("[data-ae-duty]"); if (!cb) return;
+  cb.disabled = true;
+  try { await readResponse(await fetch("/api/aes/availability", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: cb.dataset.aeDuty, available: cb.checked }) })); loadStats(); }
+  catch (err) { alert(err.message); cb.checked = !cb.checked; }
+  finally { cb.disabled = false; }
+});
 
 // ── Automation status ─────────────────────────────────────────────────────
 let _autoNextAt = null;
