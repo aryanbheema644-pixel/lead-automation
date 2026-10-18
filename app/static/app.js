@@ -209,6 +209,7 @@ async function loadStats() {
   const { stats, running, providers } = st;
   if (st.aes) { const first = !_aes.length; _aes = st.aes; if (first) loadLeads(); }
   renderTeam(st.aes || [], st.aes_on_leave || []);
+  renderSheetLinks(st.sheet_links || []);
   $("#dupCount").textContent = st.duplicate_checks || 0;
   const tot = stats.total || 0, pct = (n) => (tot ? ((n / tot) * 100).toFixed(1) + "%" : "0%");
   const tiles = [
@@ -233,6 +234,12 @@ async function loadStats() {
   if (running || cycle) startPolling();
   else if (!_rescreening && stats.queued === 0 && stats.processing === 0) stopPolling();
   return running;
+}
+
+// ── Sidebar shortcuts to the Google Sheets in use ────────────────────────
+const _SHEETS_ICON = `<svg class="gs-ico" viewBox="0 0 24 32" aria-hidden="true"><path d="M2 0h14l8 8v22a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2z" fill="#0F9D58"/><path d="M16 0l8 8h-6a2 2 0 0 1-2-2z" fill="#87CEAC"/><path d="M5 13h14v12H5z" fill="#fff"/><path d="M5 17h14M5 21h14M11 13v12" stroke="#0F9D58" stroke-width="1.4"/></svg>`;
+function renderSheetLinks(links) {
+  setHTML($("#sheetLinks"), links.map((s) => `<a class="sheet-btn" href="${esc(s.url)}" target="_blank" rel="noopener" title="Open “${esc(s.name)}” in Google Sheets">${_SHEETS_ICON}<span class="sb-txt"><span class="sb-name">${esc(s.name)}</span><span class="sb-role">${esc(s.role)}</span></span><span class="sb-ext">↗</span></a>`).join(""));
 }
 
 // ── Team on duty: untick an AE on leave -> no new leads for them ─────────

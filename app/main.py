@@ -1218,6 +1218,7 @@ def status() -> JSONResponse:
             "current": current,
             "providers": config.provider_status(),
             "scheduler": _automation_status(),
+            "sheet_links": _sheet_links(),
             "aes": _ae_names(),
             "aes_on_leave": sorted(distribution.on_leave()),
             "duplicate_checks": sum(1 for l in db.list_leads() if l.get("dup_of") and l.get("status") != "duplicate"),
@@ -1311,6 +1312,32 @@ def reject(lead_id: int) -> JSONResponse:
     db.update_lead(lead_id, status="rejected",
                    reasoning="Manually rejected by reviewer.", **fields)
     return JSONResponse({"ok": True})
+
+
+def _sheet_links() -> list[dict]:
+    """Sidebar shortcuts to the source and Pipedrive (destination) sheets. The
+    sheets' real titles are looked up once and remembered; until then (or if
+    that fails) a plain label is shown."""
+    out = []
+    for key, sid, fallback in (("source", config.GOOGLE_SOURCE_SHEET_ID, "Leads source sheet"),
+                               ("dest", config.GOOGLE_DEST_SHEET_ID, "Pipedrive sheet")):
+        if not sid:
+            continue
+        title = db.meta_get(f"sheet_title:{sid}")
+        if not title and db.meta_get(f"sheet_title_tried:{sid}") != "1":
+            db.meta_set(f"sheet_title_tried:{sid}", "1")
+            threading.Thread(target=_fetch_sheet_title, args=(sid,), daemon=True).start()
+        out.append({"key": key, "name": title or fallback,
+                    "role": "Leads come from here" if key == "source" else "Synced to Pipedrive",
+                    "url": f"https://docs.google.com/spreadsheets/d/{sid}/edit"})
+    return out
+
+
+def _fetch_sheet_title(sid: str) -> None:
+    try:
+        db.meta_set(f"sheet_title:{sid}", sheets._client().open_by_key(sid).title)
+    except Exception:  # noqa: BLE001 — the fallback label is fine
+        pass
 
 
 def _ae_names() -> list[str]:
