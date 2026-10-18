@@ -118,6 +118,14 @@ GTM_SHEET_ID = _get("GTM_SHEET_ID", "10Lny-WiFbptDapxNwEEXj-PDEIaEz_uM_A81kfm01P
 GTM_TAB = _get("GTM_TAB", "MQL Tracker")
 GTM_CHANNEL_ROWS = {"Meta": "Inbound - Meta", "WhatsApp": "Inbound - Website (Whatsapp)",
                     "Website": "Inbound - Website (SEO + AEO)"}
+# Website-form leads go to the GTM row matching their "Where have you heard about
+# us" answer (substring match, lower-cased; first hit wins). Anything else —
+# blank, Search Engines, ChatGPT/AI, Others, unknown — stays on the Website row.
+GTM_WEBSITE_HEARD_ROWS = [
+    ("facebook", "Inbound - Meta"), ("instagram", "Inbound - Meta"),
+    ("google ads", "Inbound - Google"), ("reddit", "Inbound - Reddit"),
+    ("linkedin", "Inbound - Linkedin"),
+]
 GTM_SQL_ROW = "{ae} - SQL"          # e.g. "Rahul - SQL"; {ae} = the AE's first name
 
 

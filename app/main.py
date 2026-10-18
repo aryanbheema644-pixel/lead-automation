@@ -42,6 +42,8 @@ def _startup() -> None:
         except Exception as e:  # noqa: BLE001 — pause pulls rather than risk the backlog
             db.meta_set("sched_paused", "1")
             db.meta_set("start_after_result", json.dumps({"error": str(e)[:200]}))
+    if db.meta_get("heard_backfill_v1") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
+        threading.Thread(target=_backfill_heard_about, daemon=True).start()
     if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
         threading.Thread(target=_fix_old_visas, daemon=True).start()
     if config.GTM_SHEET_ID and db.meta_get("gtm_date_fix_v1") != "1":
@@ -107,6 +109,37 @@ def _start_after_rows() -> dict:
     with db._lock, db._conn() as conn:
         conn.executemany("DELETE FROM seen_leads WHERE k = ?", [(k,) for k in unmark if k in seen])
     return out
+
+
+def _backfill_heard_about() -> None:
+    """One-time: website leads that came in before "Where have you heard about
+    us" was stored get it from the source sheet (same email/phone/name), so the
+    GTM report counts them in the right row on the next push."""
+    try:
+        typed: dict[str, str] = {}
+        for title, rows in sheets.read_source_tabs():
+            if _channel_from_tab(title) != "Website" or not rows:
+                continue
+            mapping = _sheet_mapping(rows, title)
+            if not _indices(mapping, "heard_about"):
+                continue
+            for r in rows[1:]:
+                val = lambda k, _r=r: " ".join(_r[i].strip() for i in _indices(mapping, k)
+                                               if 0 <= i < len(_r) and _r[i].strip())
+                key, _ = _dedup_keys(val("name"), val("email"), val("phone"))
+                if key and val("heard_about"):
+                    typed[key] = val("heard_about")       # newest row wins
+        n = 0
+        for l in db.list_leads():
+            if l.get("channel") == "Website" and not (l.get("heard_about") or "").strip():
+                key, _ = _dedup_keys(l.get("name", ""), l.get("email", ""), l.get("phone", ""))
+                if typed.get(key):
+                    db.update_lead(l["id"], heard_about=typed[key])
+                    n += 1
+        db.meta_set("heard_backfill_result", json.dumps({"filled": n}))
+        db.meta_set("heard_backfill_v1", "1")
+    except Exception as e:  # noqa: BLE001 — retried on next start
+        db.meta_set("heard_backfill_result", json.dumps({"error": str(e)[:200]}))
 
 
 def _fix_old_visas() -> None:
@@ -416,6 +449,7 @@ def _insert_row(val, channel: str = "", link: str = "", origin: str = "") -> boo
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
         other_link=canonical_url(info["other_url"]) or info["other_url"],
         link_raw=raw_link, visa=normalize_visa(val("visa")), lead_date=val("date"),
+        heard_about=val("heard_about"),
         # Pulled from a source tab: the tab IS the channel (a column like "Where
         # have you heard about us" must never override it). Uploads: the row's
         # channel/source column if present, else "Not provided".
@@ -518,7 +552,15 @@ _HEADER_FIELDS = {
     "date": ["date of lead", "date od lead", "timestamp", "date", "created", "created at"],
     "company": ["company name", "company"],
     "channel": ["channel", "source", "lead source"],
+    "heard_about": ["where have you heard about us", "where did you hear about us",
+                    "how did you hear about us", "heard about us", "where have you heard about us?"],
 }
+
+
+# The website form's "Where have you heard about us" options (lower-cased).
+_HEARD_OPTIONS = {"search engines", "chat gpt/other ai platforms", "chatgpt/other ai platforms",
+                  "facebook/instagram ads", "google ads", "reddit", "linkedin", "others",
+                  "other", "another option"}
 
 
 def _hdr(h: str) -> str:
@@ -656,6 +698,9 @@ def _value_mapping(data: list[list[str]], exclude: set) -> dict:
         ("visa", lambda v: len(v) <= 40 and not re.search(r"https?:|www\.|/", v)
                            and (normalize_visa(v) not in (v, "", _NO_VISA)
                                 or bool(re.search(r"not[\s_-]*sure", v, re.I)))),
+        # Website form's "Where have you heard about us" (claims its column before
+        # the channel rule, whose values overlap: "Linkedin", "Google Ads"…).
+        ("heard_about", lambda v: _hdr(v) in _HEARD_OPTIONS),
         ("channel", lambda v: len(v) <= 30 and not re.search(r"https?:|www\.|\.com|/", v, re.I)
                               and _channel_from_tab(v) in _SOURCE_LABEL),
     ]

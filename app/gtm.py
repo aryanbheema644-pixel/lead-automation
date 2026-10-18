@@ -80,6 +80,10 @@ def _desired(lead: dict) -> dict | None:
     if lead.get("status") != "accepted" or not lead.get("pushed"):
         return None                                   # only what's in the Pipedrive sheet
     channel_row = config.GTM_CHANNEL_ROWS.get(lead.get("channel") or "")
+    if lead.get("channel") == "Website":
+        heard = " ".join((lead.get("heard_about") or "").lower().split())
+        channel_row = next((row for needle, row in config.GTM_WEBSITE_HEARD_ROWS if needle in heard),
+                           channel_row)
     if not channel_row:
         return None
     owner = (lead.get("owner") or "").split()

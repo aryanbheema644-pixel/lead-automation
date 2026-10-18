@@ -36,6 +36,7 @@ _COLUMNS = {
     "other_link": "TEXT",          # a non-LinkedIn profile link the lead provided
     "link_raw": "TEXT",            # the profile-link cell exactly as the lead typed it
     "origin": "TEXT",              # 'sheet' (pulled from the source sheet) | 'upload' (CSV)
+    "heard_about": "TEXT",         # website form: "Where have you heard about us" answer
     "gtm_counted": "TEXT",         # JSON: where this lead was +1'd in the GTM report
     "dup_of": "INTEGER",           # open "possible duplicate of lead #N" flag (Duplicates page)
     "dup_reason": "TEXT",          # why it was flagged / merged (same name, same email, …)
@@ -157,16 +158,16 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 def insert_lead(name: str, company: str, email: str, phone: str, message: str,
                 linkedin: str = "", li_optout: int = 0, other_link: str = "",
                 link_raw: str = "", visa: str = "", lead_date: str = "", channel: str = "",
-                origin: str = "") -> int:
+                origin: str = "", heard_about: str = "") -> int:
     now = time.time()
     with _lock, _conn() as conn:
         cur = conn.execute(
             """INSERT INTO leads (name, company, channel, email, phone, linkedin,
                                   li_optout, other_link, link_raw, visa, lead_date,
-                                  message, origin, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                                  message, origin, heard_about, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
             (name, company, channel, email, phone, linkedin, li_optout, other_link,
-             link_raw, visa, lead_date, message, origin, now, now),
+             link_raw, visa, lead_date, message, origin, heard_about, now, now),
         )
         return int(cur.lastrowid)
 

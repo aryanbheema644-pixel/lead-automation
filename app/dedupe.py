@@ -118,7 +118,8 @@ def merge(primary_id: int, dup_id: int, reason: str) -> None:
         if not p or not d or p["id"] == d["id"]:
             return
         fields: dict = {}
-        for f in ("email", "phone", "company", "visa", "linkedin", "other_link", "link_raw", "lead_date"):
+        for f in ("email", "phone", "company", "visa", "linkedin", "other_link", "link_raw", "lead_date",
+                  "heard_about"):
             if not (p.get(f) or "").strip() and (d.get(f) or "").strip():
                 fields[f] = d[f]
         # Channel priority for the merged lead: Meta > Website > WhatsApp > others
