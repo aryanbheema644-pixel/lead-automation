@@ -21,7 +21,15 @@ $("#themeToggle").addEventListener("click", () => {
 
 // ── Router ──────────────────────────────────────────────────────────────────
 const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates" };
-function setPage(p) { if (!PAGES[p]) p = "dashboard"; document.querySelectorAll(".page").forEach((s) => (s.hidden = s.dataset.page !== p)); document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === p)); }
+// "#leads/rejected" opens the Leads page filtered to that status (dashboard tiles link here).
+let _statusFilter = "all";
+function setPage(hash) {
+  let [p, sub] = String(hash || "").split("/");
+  if (!PAGES[p]) p = "dashboard";
+  if (p === "leads") { const s = sub || "all"; if (s !== _statusFilter) { _statusFilter = s; if (typeof loadLeads === "function") loadLeads(); } }
+  document.querySelectorAll(".page").forEach((s) => (s.hidden = s.dataset.page !== p));
+  document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === p));
+}
 window.addEventListener("hashchange", () => setPage(location.hash.slice(1)));
 
 // ── Greeting ────────────────────────────────────────────────────────────────
@@ -152,6 +160,12 @@ $("#chanFilter").addEventListener("click", (e) => {
   loadLeads();
 });
 
+function renderStatusBar() {
+  const el = $("#statusBar"); if (!el) return;
+  el.hidden = _statusFilter === "all";
+  setHTML(el, _statusFilter === "all" ? "" : `Showing: <b>${esc(_statusFilter)}</b> leads <a href="#leads" class="sb-clear" title="Show all statuses">✕ show all</a>`);
+}
+
 async function loadLeads() {
   const { leads } = await (await fetch("/api/leads?status=all")).json();
   // A reviewer-triggered re-screen runs outside the queue; keep polling until it lands.
@@ -162,8 +176,10 @@ async function loadLeads() {
   _ownerById = Object.fromEntries(leads.map((x) => [x.id, x.owner]));
   const _dupTargets = new Set(leads.filter((x) => x.dup_of && x.status !== "duplicate").map((x) => x.dup_of));
   renderChannelFilter(leads);
-  const shown = _chanFilter === "all" ? leads : leads.filter((l) => (l.channel || "Not provided") === _chanFilter);
-  if (!shown.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No ${esc(_CHAN_LABEL[_chanFilter] || _chanFilter)} leads yet.</td></tr>`); return; }
+  renderStatusBar();
+  const shown = leads.filter((l) => (_chanFilter === "all" || (l.channel || "Not provided") === _chanFilter)
+                                 && (_statusFilter === "all" || l.status === _statusFilter));
+  if (!shown.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No ${_statusFilter === "all" ? "" : esc(_statusFilter) + " "}${_chanFilter === "all" ? "" : esc(_CHAN_LABEL[_chanFilter] || _chanFilter) + " "}leads.</td></tr>`); return; }
   if (setHTML(tb, shown.map((l) => `<tr>
     <td class="sub">${l.id}</td>
     <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
@@ -242,10 +258,10 @@ async function loadStats() {
     { c: "review", ic: ICONS.clock, title: "In Review", badge: `<span class="trend">${pct(stats.review || 0)}</span>`, num: stats.review || 0, sub: "of total" },
     { c: "rejected", ic: ICONS.x, title: "Rejected", badge: `<span class="trend down">${pct(stats.rejected || 0)}</span>`, num: stats.rejected || 0, sub: "of total" },
   ];
-  setHTML($("#stats"), tiles.map((t) => `<div class="panel tile ${t.c}"><div class="ic">${t.ic}</div><div class="body">
+  setHTML($("#stats"), tiles.map((t) => `<a class="panel tile ${t.c} tile-link" href="#leads/${t.c === "total" ? "all" : t.c}" title="Show ${t.c === "total" ? "all" : t.c} leads"><div class="ic">${t.ic}</div><div class="body">
     <div class="t-row"><span class="t-title">${t.title}</span>${t.badge}</div>
     <div class="t-num">${t.num}</div>
-    <div class="t-row2"><span class="t-sub">${t.sub}</span><span class="spark-slot">${_spark}</span></div></div></div>`).join(""));
+    <div class="t-row2"><span class="t-sub">${t.sub}</span><span class="spark-slot">${_spark}</span></div></div></a>`).join(""));
   const prov =[["OpenRouter", providers.openrouter], ["Tavily", providers.tavily], ["Firecrawl", providers.firecrawl], ["Apify", providers.apify], ["Screening", providers.screening], ["Sheets", providers.sheets]];
   if (st.scheduler && st.scheduler.enabled) prov.push([`Auto ${Math.round((st.scheduler.interval || 900) / 60)}m`, true]);
   setHTML($("#providers"), prov.map(([n, on]) => `<li class="${on ? "on" : ""}"><span class="dot"></span>${n}</li>`).join(""));

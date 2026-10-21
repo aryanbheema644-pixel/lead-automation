@@ -327,3 +327,10 @@ table.leads { width: 100%; border-collapse: collapse; }
 .chan-chip:hover { color: var(--text); border-color: var(--accent); }
 .chan-chip.active { background: var(--primary-bg); color: var(--primary-fg); border-color: var(--primary-bg); }
 .chan-chip .n { font-weight: 500; opacity: .7; margin-left: 2px; }
+
+/* Dashboard tiles open the Leads list filtered to that status */
+.tile-link { color: inherit; cursor: pointer; transition: border-color .12s, transform .12s; }
+.tile-link:hover { border-color: var(--accent); transform: translateY(-1px); }
+.status-bar { font-size: 12.5px; color: var(--muted); margin: -4px 0 10px; display: flex; gap: 10px; align-items: center; }
+.status-bar b { color: var(--text); text-transform: capitalize; }
+.status-bar .sb-clear { color: var(--accent); font-weight: 600; }
