@@ -131,6 +131,27 @@ async function acceptTop(id) { try { await readResponse(await fetch(`/api/leads/
 async function rejectLead(id) { await fetch(`/api/leads/${id}/reject`, { method: "POST" }); refresh(); }
 
 // ── Views ───────────────────────────────────────────────────────────────────
+// ── Leads: filter by channel ─────────────────────────────────────────────
+const _CHAN_LABEL = { all: "All", Meta: "Meta", Website: "Website", WhatsApp: "WhatsApp (bot)" };
+const _CHAN_ORDER = ["Meta", "Website", "WhatsApp"];
+let _chanFilter = "all";
+try { _chanFilter = localStorage.getItem("ls-chan") || "all"; } catch {}
+function renderChannelFilter(leads) {
+  const counts = {};
+  leads.forEach((l) => { const c = l.channel || "Not provided"; counts[c] = (counts[c] || 0) + 1; });
+  // Meta / Website / WhatsApp always shown; any other channel only if it has leads.
+  const chans = [..._CHAN_ORDER, ...Object.keys(counts).filter((c) => !_CHAN_ORDER.includes(c)).sort()];
+  if (_chanFilter !== "all" && !chans.includes(_chanFilter)) _chanFilter = "all";
+  const chip = (key, label, n) => `<button class="chan-chip${_chanFilter === key ? " active" : ""}" data-chan="${esc(key)}" role="tab" aria-selected="${_chanFilter === key}">${esc(label)} <span class="n">${n}</span></button>`;
+  setHTML($("#chanFilter"), chip("all", "All", leads.length) + chans.map((c) => chip(c, _CHAN_LABEL[c] || c, counts[c] || 0)).join(""));
+}
+$("#chanFilter").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-chan]"); if (!b) return;
+  _chanFilter = b.dataset.chan;
+  try { localStorage.setItem("ls-chan", _chanFilter); } catch {}
+  loadLeads();
+});
+
 async function loadLeads() {
   const { leads } = await (await fetch("/api/leads?status=all")).json();
   // A reviewer-triggered re-screen runs outside the queue; keep polling until it lands.
@@ -140,7 +161,10 @@ async function loadLeads() {
   if (!leads.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`); return; }
   _ownerById = Object.fromEntries(leads.map((x) => [x.id, x.owner]));
   const _dupTargets = new Set(leads.filter((x) => x.dup_of && x.status !== "duplicate").map((x) => x.dup_of));
-  if (setHTML(tb, leads.map((l) => `<tr>
+  renderChannelFilter(leads);
+  const shown = _chanFilter === "all" ? leads : leads.filter((l) => (l.channel || "Not provided") === _chanFilter);
+  if (!shown.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No ${esc(_CHAN_LABEL[_chanFilter] || _chanFilter)} leads yet.</td></tr>`); return; }
+  if (setHTML(tb, shown.map((l) => `<tr>
     <td class="sub">${l.id}</td>
     <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
     <td>${l.channel ? `<span class="chip">${esc(l.channel)}</span>` : '<span class="sub">—</span>'}</td>

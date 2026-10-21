@@ -320,3 +320,10 @@ table.leads { width: 100%; border-collapse: collapse; }
 .badge.duplicate { background: var(--chip); color: var(--muted); }
 @media (max-width: 980px) { .dup-pair { grid-template-columns: minmax(0, 1fr); } }
 .dup-merged { margin-top: 3px; }
+
+/* ===== Leads: channel filter ===== */
+.chan-filter { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.chan-chip { font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); cursor: pointer; transition: all .12s; }
+.chan-chip:hover { color: var(--text); border-color: var(--accent); }
+.chan-chip.active { background: var(--primary-bg); color: var(--primary-fg); border-color: var(--primary-bg); }
+.chan-chip .n { font-weight: 500; opacity: .7; margin-left: 2px; }

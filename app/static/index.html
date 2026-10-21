@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LeadSearch</title>
-  <link rel="stylesheet" href="/static/styles.css?v=27" />
+  <link rel="stylesheet" href="/static/styles.css?v=28" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -135,6 +135,7 @@
 
         <!-- Leads -->
         <section class="page" data-page="leads" hidden>
+          <div class="chan-filter" id="chanFilter" role="tablist" aria-label="Filter leads by channel"></div>
           <div class="panel view">
             <table class="leads">
               <thead><tr><th>#</th><th>Name</th><th>Channel</th><th>Status</th><th>Top match</th><th>Fit</th><th>AE</th><th></th></tr></thead>
@@ -160,6 +161,6 @@
   <div id="drawer" class="drawer">
     <div class="drawer-panel"><button class="drawer-close" id="drawerClose">✕</button><div id="drawerBody"></div></div>
   </div>
-  <script src="/static/app.js?v=27"></script>
+  <script src="/static/app.js?v=28"></script>
 </body>
 </html>
