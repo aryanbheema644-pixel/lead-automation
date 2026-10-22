@@ -20,7 +20,7 @@ $("#themeToggle").addEventListener("click", () => {
 });
 
 // ── Router ──────────────────────────────────────────────────────────────────
-const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates" };
+const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", written: "Written on Pipedrive" };
 // "#leads/rejected" opens the Leads page filtered to that status (dashboard tiles link here).
 let _statusFilter = "all";
 function setPage(hash) {
@@ -443,3 +443,86 @@ setTheme(document.documentElement.dataset.theme || "dark");
 setPage(location.hash.slice(1) || "dashboard");
 refresh();
 loadStats().then((r) => { if (r) startPolling(); });
+
+// ── Pipedrive: preview (read-only) + write the ticked leads ─────────────────
+const _PD_LABEL = { create: "New deal", link: "Has a deal already", update: "Changed — update", unchanged: "Up to date", skipped: "Not ready", error: "Error" };
+const _PD_DONE = { create: "Deal created", link: "Linked", update: "Updated", error: "Error" };
+const _PD_WRITABLE = new Set(["create", "link", "update"]);
+let _pdPlan = null;
+const pdDeal = (e, domain) => e.deal_id && domain ? `<a href="https://${esc(domain)}.pipedrive.com/deal/${e.deal_id}" target="_blank">${esc(e.title)} ↗</a>` : esc(e.title);
+const pdWhat = (e) => `<div class="subtle">${e.actions.map(esc).join("<br>")}${e.notes.length ? "<br>⚠ " + e.notes.map(esc).join("<br>⚠ ") : ""}</div>`;
+function pdRender(d) {
+  _pdPlan = d;
+  setHTML($("#pdCounts"), Object.entries(d.counts).filter(([, n]) => n).map(([k, n]) => `<span class="pd-tag pd-${k}">${_PD_LABEL[k] || k}: <b>${n}</b></span>`).join(""));
+  // Leads already written and unchanged since live on the "Written on Pipedrive"
+  // page, so the list here only shows what still needs a decision.
+  const synced = d.plan.filter((e) => e.status === "unchanged").length;
+  setHTML($("#pdSynced"), synced ? `${synced} lead(s) already synced and unchanged are hidden here: see <a href="#written">Written on Pipedrive</a>.` : "");
+  setHTML($("#pdRows"), d.plan.map((e, i) => e.status === "unchanged" ? "" : `<tr><td>${_PD_WRITABLE.has(e.status) ? `<input type="checkbox" class="pd-pick" data-i="${i}" />` : ""}</td><td>${e.row}</td><td><b>${esc(e.name)}</b><div class="subtle">${esc(e.email)}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
+    <td><span class="pd-tag pd-${e.status}">${_PD_LABEL[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">${d.plan.length ? "Everything in the sheet is already synced. 🎉" : "The Pipedrive sheet is empty."}</td></tr>`);
+  $("#pdAll").checked = false; $("#pdAll").disabled = !d.plan.some((e) => _PD_WRITABLE.has(e.status));
+  pdPicked();
+}
+function pdPicked() {
+  const n = document.querySelectorAll(".pd-pick:checked").length, b = $("#pdWriteBtn");
+  b.disabled = !n; b.textContent = n ? `Write on Pipe (${n})` : "Write on Pipe";
+}
+async function pdPreview(note) {
+  const b = $("#pdPreviewBtn"), m = $("#pdMsg"); b.disabled = true;
+  if (!note) { m.className = "msg"; m.textContent = "Reading the sheet and Pipedrive (read-only)…"; }
+  try {
+    const d = await readResponse(await fetch("/api/pipedrive/preview"));
+    if (!note) { m.className = "msg ok"; m.textContent = `Preview only, nothing written · pipeline “${d.pipeline}” → stage “${d.stage}”` + (d.missing_fields.length ? ` · not in Pipedrive: ${d.missing_fields.join(", ")}` : ""); }
+    pdRender(d);
+  } catch (e) { m.className = "msg err"; m.textContent = (note ? note + " · " : "") + e.message; }
+  finally { b.disabled = false; }
+}
+async function pdLoadWritten() {
+  let d; try { d = await (await fetch("/api/pipedrive/written")).json(); } catch { return; }
+  $("#writtenCount").textContent = d.written.length;
+  setHTML($("#pdWritten"), d.written.map((e) => `<tr><td>${new Date(e.at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td><td><b>${esc(e.name)}</b><div class="subtle">${esc(e.email)}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
+    <td><span class="pd-tag pd-${e.status}">${_PD_DONE[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing written yet.</td></tr>`);
+}
+$("#pdRows").addEventListener("change", (e) => { if (e.target.classList.contains("pd-pick")) pdPicked(); });
+$("#pdAll").addEventListener("change", (e) => { document.querySelectorAll(".pd-pick").forEach((c) => (c.checked = e.target.checked)); pdPicked(); });
+$("#pdPreviewBtn").addEventListener("click", () => pdPreview());
+// In-page confirm (the desktop app's browser blocks window.confirm, which made
+// the button silently do nothing). Resolves true on "Write on Pipe".
+function pdConfirm(picks) {
+  const nNew = picks.filter((e) => e.status === "create").length;
+  $("#pdConfirmTitle").textContent = `Write ${picks.length} lead(s) to Pipedrive?`;
+  setHTML($("#pdConfirmBody"), `<ul>${picks.map((e) => `<li><b>${esc(e.name)}</b>: ${_PD_LABEL[e.status]}${e.status === "create" ? ` “${esc(e.title)}” → ${esc(e.owner)}` : ""}</li>`).join("")}</ul>`
+    + (nNew ? `<p class="subtle">This creates <b>${nNew}</b> deal(s) in Pipedrive.</p>` : ""));
+  const box = $("#pdConfirm"); box.hidden = false; $("#pdConfirmYes").focus();
+  return new Promise((resolve) => {
+    const done = (ok) => { box.hidden = true; $("#pdConfirmYes").onclick = $("#pdConfirmNo").onclick = box.onclick = null; resolve(ok); };
+    $("#pdConfirmYes").onclick = () => done(true);
+    $("#pdConfirmNo").onclick = () => done(false);
+    box.onclick = (ev) => { if (ev.target === box) done(false); };
+  });
+}
+function pdProgress(j) {
+  const total = j.total || 0, done = Math.min(j.done || 0, total);
+  $("#pdProgress").hidden = false;
+  $("#pdProgText").textContent = !j.running ? "Done" : j.current ? `Writing ${j.current}…` : "Preparing (reading Pipedrive)…";
+  $("#pdProgNum").textContent = total ? `${done} of ${total}` : "";
+  $("#pdBarFill").style.width = (total ? Math.round((done / total) * 100) : 0) + "%";
+}
+$("#pdWriteBtn").addEventListener("click", async () => {
+  const picks = [...document.querySelectorAll(".pd-pick:checked")].map((c) => _pdPlan.plan[+c.dataset.i]);
+  if (!picks.length || !(await pdConfirm(picks))) return;
+  const b = $("#pdWriteBtn"), m = $("#pdMsg"); b.disabled = true; $("#pdPreviewBtn").disabled = true; m.className = "msg"; m.textContent = "";
+  try {
+    let j = await readResponse(await fetch("/api/pipedrive/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows: picks.map((e) => ({ row: e.row, key: e.key })) }) }));
+    pdProgress(j);
+    while (j.running) { await new Promise((r) => setTimeout(r, 700)); j = await readResponse(await fetch("/api/pipedrive/job")); pdProgress(j); }
+    if (j.error) throw new Error(j.error);
+    const d = j.result, bad = d.counts.error || 0;
+    const note = `Written to Pipedrive: ${picks.length - bad} lead(s)` + (bad ? `, ${bad} failed` : "") + " · details on the “Written on Pipedrive” page";
+    m.className = bad ? "msg err" : "msg ok"; m.textContent = note;
+    pdLoadWritten();
+    await pdPreview(note);          // refresh the list: written leads drop out of it
+  } catch (e) { m.className = "msg err"; m.textContent = e.message; pdPicked(); $("#pdPreviewBtn").disabled = false; }
+  finally { setTimeout(() => ($("#pdProgress").hidden = true), 2500); }
+});
+pdLoadWritten();

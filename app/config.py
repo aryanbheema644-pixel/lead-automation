@@ -172,6 +172,16 @@ def sheets_ready() -> bool:
     return bool(GOOGLE_SERVICE_ACCOUNT_JSON)
 
 
+# Pipedrive: the destination sheet's rows become persons + deals (was Pabbly).
+# PIPEDRIVE_WRITE=false (the default) = dry run: only read calls, a preview of
+# what would be created/updated. Nothing reaches the CRM until it is true.
+PIPEDRIVE_API_TOKEN = _get("PIPEDRIVE_API_TOKEN")
+PIPEDRIVE_DOMAIN = _get("PIPEDRIVE_DOMAIN")          # "<company>" of <company>.pipedrive.com (links only)
+PIPEDRIVE_PIPELINE = _get("PIPEDRIVE_PIPELINE", "Consulting and agencies")
+PIPEDRIVE_STAGE = _get("PIPEDRIVE_STAGE", "New Lead")
+PIPEDRIVE_WRITE = _get("PIPEDRIVE_WRITE", "false").lower() in ("1", "true", "yes")
+
+
 def provider_status() -> dict:
     """Which integrations are configured — surfaced in the UI health panel."""
     return {
@@ -185,5 +195,7 @@ def provider_status() -> dict:
         "sheets": sheets_ready(),
         "source_sheet": bool(GOOGLE_SOURCE_SHEET_ID),
         "dest_sheet": bool(GOOGLE_DEST_SHEET_ID),
+        "pipedrive": bool(PIPEDRIVE_API_TOKEN),
+        "pipedrive_write": PIPEDRIVE_WRITE,
         "thresholds": {"accept": ACCEPT_THRESHOLD, "review": REVIEW_THRESHOLD},
     }

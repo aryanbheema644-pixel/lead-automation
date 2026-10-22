@@ -31,6 +31,11 @@ services:
         sync: false
       - key: GOOGLE_DEST_TAB
         sync: false
+      # --- Pipedrive: sheet -> CRM sync ("Write on Pipe" on the Pipedrive page) ---
+      - key: PIPEDRIVE_API_TOKEN
+        sync: false
+      - key: PIPEDRIVE_DOMAIN
+        value: bbg
       # --- non-secret defaults (edit in dashboard anytime) ---
       - key: OPENROUTER_MODEL
         value: anthropic/claude-sonnet-5.5

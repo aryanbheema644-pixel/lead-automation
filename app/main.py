@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, dedupe, gtm, sheets
+from . import config, db, dedupe, gtm, pipedrive, sheets
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -1172,6 +1172,66 @@ def sheets_push() -> JSONResponse:
         return JSONResponse(_locked_sync())
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/pipedrive/preview")
+def pipedrive_preview() -> JSONResponse:
+    """Dry run: what syncing the Pipedrive sheet would create / link / update in
+    Pipedrive. Read-only — nothing is written to the CRM."""
+    try:
+        return JSONResponse(pipedrive.sync(live=False))
+    except (pipedrive.PipedriveError, sheets.SheetsError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/pipedrive/written")
+def pipedrive_written() -> JSONResponse:
+    """History of the leads written to Pipedrive from the Pipedrive page."""
+    return JSONResponse({"written": pipedrive.written(), "domain": config.PIPEDRIVE_DOMAIN})
+
+
+@app.post("/api/pipedrive/sync")
+def pipedrive_sync(body: dict | None = None) -> JSONResponse:
+    """Start writing to Pipedrive in the background; poll /api/pipedrive/job for
+    progress. {"rows": [{"row": n, "key": …}, …]} = only the leads ticked on the
+    Pipedrive page ("Write on Pipe"). With no rows it syncs the whole sheet,
+    which is refused unless PIPEDRIVE_WRITE=true."""
+    only = (body or {}).get("rows")
+    if only is None and not config.PIPEDRIVE_WRITE:
+        raise HTTPException(409, "Whole-sheet Pipedrive sync is off. Tick the leads to write instead.")
+    if not _pd_lock.acquire(blocking=False):      # one write at a time: no double-clicked duplicate deals
+        raise HTTPException(409, "Already writing to Pipedrive — wait for it to finish.")
+    _pd_job.clear()
+    _pd_job.update({"running": True, "done": 0, "total": len(only) if only else 0,
+                    "current": "", "result": None, "error": None})
+
+    def progress(i, total, name):
+        _pd_job.update({"done": i, "total": total, "current": name})
+
+    def work():
+        try:
+            _pd_job["result"] = pipedrive.sync(live=True, only=only, progress=progress)
+            _pd_job["done"] = _pd_job["total"]
+        except (pipedrive.PipedriveError, sheets.SheetsError) as e:
+            _pd_job["error"] = str(e)
+        except Exception as e:  # noqa: BLE001 — report, never leave the job "running"
+            _pd_job["error"] = f"Unexpected error: {e}"
+        finally:
+            _pd_job["running"] = False
+            _pd_lock.release()
+
+    threading.Thread(target=work, daemon=True).start()
+    return JSONResponse(_pd_job)
+
+
+@app.get("/api/pipedrive/job")
+def pipedrive_job() -> JSONResponse:
+    """Progress of the current / last Pipedrive write."""
+    return JSONResponse(_pd_job)
+
+
+_pd_lock = threading.Lock()
+_pd_job: dict = {"running": False}
 
 
 @app.post("/api/automation/pause")

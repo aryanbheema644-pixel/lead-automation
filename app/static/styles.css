@@ -334,3 +334,27 @@ table.leads { width: 100%; border-collapse: collapse; }
 .status-bar { font-size: 12.5px; color: var(--muted); margin: -4px 0 10px; display: flex; gap: 10px; align-items: center; }
 .status-bar b { color: var(--text); text-transform: capitalize; }
 .status-bar .sb-clear { color: var(--accent); font-weight: 600; }
+
+/* Pipedrive sync preview */
+.pd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.pd-head .subtle { max-width: 640px; }
+.pd-actions { display: flex; gap: 8px; }
+.pd-intro { margin: 0 0 14px; }
+.pd-pick, #pdAll { width: 16px; height: 16px; cursor: pointer; }
+.pd-mode { display: inline-block; margin-left: 6px; font-size: 12px; font-weight: 600; color: var(--accent); }
+.pd-counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.pd-tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); white-space: nowrap; }
+.pd-create { color: var(--good); }
+.pd-link, .pd-update { color: var(--accent); }
+.pd-error { color: var(--bad); }
+.pd-skipped, .pd-unchanged { color: var(--muted); }
+.pd-progress { margin: 14px 0 0; max-width: 520px; }
+.pd-progress-text { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.pd-bar { height: 8px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--border); overflow: hidden; }
+.pd-bar-fill { height: 100%; width: 0; background: var(--good); border-radius: 99px; transition: width .4s ease; }
+.pd-modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 16px; }
+.pd-modal[hidden] { display: none; }
+.pd-modal-box { width: min(520px, 100%); max-height: 80vh; overflow-y: auto; padding: 22px; background-color: var(--bg); }
+.pd-modal-box h3 { margin: 0 0 12px; font-size: 17px; }
+.pd-modal-body ul { margin: 0 0 10px; padding-left: 18px; font-size: 13.5px; line-height: 1.6; }
+.pd-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
