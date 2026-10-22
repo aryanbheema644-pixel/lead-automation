@@ -1190,6 +1190,19 @@ def pipedrive_written() -> JSONResponse:
     return JSONResponse({"written": pipedrive.written(), "domain": config.PIPEDRIVE_DOMAIN})
 
 
+@app.get("/api/pipedrive/export")
+def pipedrive_export() -> JSONResponse:
+    """This app's Pipedrive links + write history, to copy into another copy of
+    the app (POST it to /api/pipedrive/import there)."""
+    return JSONResponse(pipedrive.export_state())
+
+
+@app.post("/api/pipedrive/import")
+def pipedrive_import(body: dict) -> JSONResponse:
+    """Merge an export from another copy of the app (e.g. the local one)."""
+    return JSONResponse(pipedrive.import_state(body))
+
+
 @app.post("/api/pipedrive/sync")
 def pipedrive_sync(body: dict | None = None) -> JSONResponse:
     """Start writing to Pipedrive in the background; poll /api/pipedrive/job for

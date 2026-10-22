@@ -368,3 +368,25 @@ def written() -> list[dict]:
         return json.loads(db.meta_get("pd_log", "[]")) or []
     except ValueError:
         return []
+
+
+def export_state() -> dict:
+    """What this app remembers about Pipedrive (row -> deal links + write history)."""
+    return {"links": _links(), "written": written()}
+
+
+def import_state(data: dict) -> dict:
+    """Merge another app's export into this one (e.g. local -> Render). Links this
+    app already has win; history entries are de-duplicated by time + deal."""
+    links = _links()
+    added = 0
+    for k, v in (data.get("links") or {}).items():
+        if k not in links and isinstance(v, dict) and v.get("deal_id"):
+            links[k] = v
+            added += 1
+    log = written()
+    seen = {(e.get("at"), e.get("deal_id")) for e in log}
+    new = [e for e in data.get("written") or [] if (e.get("at"), e.get("deal_id")) not in seen]
+    db.meta_set("pd_links", json.dumps(links))
+    db.meta_set("pd_log", json.dumps(sorted(log + new, key=lambda e: -(e.get("at") or 0))[:1000]))
+    return {"links_added": added, "history_added": len(new)}
