@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 
 import httpx
@@ -28,6 +29,10 @@ import httpx
 from . import config, db, sheets
 
 API = "https://api.pipedrive.com/v1"
+
+# One write to Pipedrive at a time (manual "Write on Pipe" or the automatic
+# update), so the saved links are never overwritten by a parallel run.
+write_lock = threading.Lock()
 
 
 class PipedriveError(RuntimeError):
@@ -199,14 +204,49 @@ def _links() -> dict[str, dict]:
         return {}
 
 
-def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> dict:
+def _not_ready(r: dict) -> list[str]:
+    return [m for m, ok in (("name", r.get("name")), ("email/number", r.get("email") or r.get("number")),
+                            ("owner id", r.get("owner (ae) id")), ("source", r.get("source"))) if not ok]
+
+
+def _sig(r: dict) -> str:
+    """The row values that end up in Pipedrive; a change here means an update."""
+    return json.dumps([r.get(k, "") for k in ("name", "visa intrested in", "owner (ae) id",
+                                               "linkedin profile url", "source", "message")])
+
+
+def auto_update() -> dict | None:
+    """Push sheet changes of leads ALREADY in Pipedrive (AE, visa, LinkedIn, …)
+    to their deal and contact. Never creates or links anything: new deals stay
+    on "Write on Pipe". Cheap when nothing changed (no Pipedrive calls at all).
+    Returns None when skipped (off, no token, or a write is running)."""
+    if not (config.PIPEDRIVE_API_TOKEN and config.PIPEDRIVE_AUTO_UPDATE):
+        return None
+    links = _links()
+    if not links:
+        return {"updated": 0}
+    changed = [r for r in _rows() if _row_key(r) in links and not _not_ready(r)
+               and links[_row_key(r)].get("sig") != _sig(r)]
+    if not changed:
+        return {"updated": 0}
+    if not write_lock.acquire(blocking=False):
+        return None                                   # a manual write is running; next time
+    try:
+        out = sync(live=True, rows=changed, auto=True)
+        return {"updated": out["counts"].get("update", 0), "errors": out["counts"].get("error", 0)}
+    finally:
+        write_lock.release()
+
+
+def sync(live: bool = False, only: list[dict] | None = None, progress=None,
+         rows: list[dict] | None = None, auto: bool = False) -> dict:
     """Plan (dry run) or apply the sheet -> Pipedrive sync. Returns the plan:
     one entry per sheet row with what was / would be done.
 
     only = [{"row": n, "key": row key}, …] limits it to those rows (the ones
     ticked in the preview). The key must still match the row, so a sheet that
     changed since the preview can't make it write the wrong lead."""
-    if live and only is None and not config.PIPEDRIVE_WRITE:
+    if live and only is None and rows is None and not config.PIPEDRIVE_WRITE:
         raise PipedriveError("Whole-sheet sync is off: set PIPEDRIVE_WRITE=true first")
     if only is not None and not only:
         raise PipedriveError("No rows selected")
@@ -218,8 +258,9 @@ def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> d
 
     # Every deal in the pipeline, indexed by its person's email/phone, so rows
     # that already have a deal (Pabbly's) get linked instead of duplicated.
+    # (Not needed for automatic updates: they only touch linked rows.)
     by_contact: dict[str, dict] = {}
-    for d in c.paged("/deals", status="all_not_deleted"):
+    for d in ([] if auto else c.paged("/deals", status="all_not_deleted")):
         if d.get("pipeline_id") != pipe_id or not isinstance(d.get("person_id"), dict):
             continue
         p = d["person_id"]
@@ -232,7 +273,7 @@ def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> d
 
     plan, counts = [], {"create": 0, "link": 0, "update": 0, "unchanged": 0, "skipped": 0, "error": 0}
     wanted = {int(o["row"]): o.get("key", "") for o in only or []}
-    rows = _rows()
+    rows = _rows() if rows is None else rows
     if only is not None:
         stale = [n for n, k in wanted.items()
                  if not any(r["_row"] == n and _row_key(r) == k for r in rows)]
@@ -243,11 +284,12 @@ def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> d
     for i, r in enumerate(rows):
         if progress:
             progress(i, len(rows), r.get("name", ""))
+        if auto and _row_key(r) not in links:
+            continue                                   # auto never creates or links
         entry = {"row": r["_row"], "key": _row_key(r), "name": r.get("name", ""), "email": r.get("email", ""),
                  "title": "", "owner": r.get("owner name", ""), "actions": [], "notes": []}
         plan.append(entry)
-        miss = [m for m, ok in (("name", r.get("name")), ("email/number", r.get("email") or r.get("number")),
-                                ("owner id", r.get("owner (ae) id")), ("source", r.get("source"))) if not ok]
+        miss = _not_ready(r)
         if miss:
             entry["status"] = "skipped"
             entry["notes"].append("not ready: no " + ", ".join(miss))
@@ -258,6 +300,10 @@ def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> d
         except (PipedriveError, httpx.HTTPError) as e:
             entry["status"] = "error"
             entry["notes"].append(str(e))
+        if live and entry["status"] != "error" and entry["key"] in links:
+            links[entry["key"]]["sig"] = _sig(r)        # what Pipedrive now matches
+        if auto and entry["status"] == "update":
+            entry["notes"].append("Automatic update (the lead changed in LeadSearch / the sheet)")
         counts[entry["status"]] = counts.get(entry["status"], 0) + 1
     if live:
         db.meta_set("pd_links", json.dumps(links))
@@ -293,12 +339,18 @@ def _sync_row(c: Client, r: dict, entry: dict, links: dict, by_contact: dict,
         if not deal_upd and not person_upd:
             entry["status"] = "unchanged"
             return
+        if "user_id" in deal_upd:
+            person_upd["owner_id"] = owner               # the contact follows the AE too
         if deal_upd:
-            entry["actions"].append("update deal " + ", ".join(f"{k}→{v}" for k, v in deal_upd.items()))
+            what = {"title": "title", "user_id": "owner"}
+            entry["actions"].append("update deal " + ", ".join(
+                f"{what[k]} → {r.get('owner name') or v if k == 'user_id' else v}" for k, v in deal_upd.items()))
             if c.write:
                 c.update_deal(link["deal_id"], deal_upd)
         if person_upd:
-            entry["actions"].append(f"update person ({len(person_upd)} field(s))")
+            names = {spec["key"]: spec["name"] for spec in fields.values()}
+            entry["actions"].append("update contact: " + ", ".join(
+                "owner" if k == "owner_id" else names.get(k, k) for k in person_upd))
             if c.write:
                 c.update_person(link["person_id"], person_upd)
         entry["status"] = "update"

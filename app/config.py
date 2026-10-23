@@ -180,6 +180,10 @@ PIPEDRIVE_DOMAIN = _get("PIPEDRIVE_DOMAIN")          # "<company>" of <company>.
 PIPEDRIVE_PIPELINE = _get("PIPEDRIVE_PIPELINE", "Consulting and agencies")
 PIPEDRIVE_STAGE = _get("PIPEDRIVE_STAGE", "New Lead")
 PIPEDRIVE_WRITE = _get("PIPEDRIVE_WRITE", "false").lower() in ("1", "true", "yes")
+# Leads already in Pipedrive (written or linked) follow their sheet row: AE,
+# visa, LinkedIn, … changes update the existing deal + contact automatically.
+# New deals are still only created with "Write on Pipe".
+PIPEDRIVE_AUTO_UPDATE = _get("PIPEDRIVE_AUTO_UPDATE", "true").lower() in ("1", "true", "yes")
 
 
 def provider_status() -> dict:

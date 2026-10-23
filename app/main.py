@@ -294,6 +294,13 @@ def _locked_sync(add_new: bool = True) -> dict:
                     out["report_issue"] = rep["skipped"][0][:200]
             except Exception as e:  # noqa: BLE001 — a report problem must not fail the push
                 out["report_issue"] = f"GTM report not updated: {str(e)[:200]}"
+        # Leads already in Pipedrive follow their (now updated) sheet rows.
+        try:
+            pd = pipedrive.auto_update()
+            if pd and pd.get("updated"):
+                out["pipedrive_updated"] = pd["updated"]
+        except Exception as e:  # noqa: BLE001 — Pipedrive trouble must not fail the push
+            out["pipedrive_issue"] = f"Pipedrive not updated: {str(e)[:200]}"
         return out
 
 
@@ -1218,7 +1225,7 @@ def pipedrive_sync(body: dict | None = None) -> JSONResponse:
     only = (body or {}).get("rows")
     if only is None and not config.PIPEDRIVE_WRITE:
         raise HTTPException(409, "Whole-sheet Pipedrive sync is off. Tick the leads to write instead.")
-    if not _pd_lock.acquire(blocking=False):      # one write at a time: no double-clicked duplicate deals
+    if not _pd_lock.acquire(blocking=False):      # one write at a time (also vs the automatic update)
         raise HTTPException(409, "Already writing to Pipedrive — wait for it to finish.")
     _pd_job.clear()
     _pd_job.update({"running": True, "done": 0, "total": len(only) if only else 0,
@@ -1249,7 +1256,7 @@ def pipedrive_job() -> JSONResponse:
     return JSONResponse(_pd_job)
 
 
-_pd_lock = threading.Lock()
+_pd_lock = pipedrive.write_lock
 _pd_job: dict = {"running": False}
 
 
