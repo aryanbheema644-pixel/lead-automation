@@ -116,7 +116,7 @@ async function changeAE(id, owner, sel) {
   sel.disabled = true;
   try {
     const d = await readResponse(await fetch(`/api/leads/${id}/owner`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner }) }));
-    sel.classList.add("saved"); sel.title = d.synced ? "Saved — updating the Pipedrive sheet and GTM report now" : d.pending_push ? "Saved — goes to the Pipedrive sheet on your next ↑ Push" : "Saved";
+    sel.classList.add("saved"); sel.title = d.synced ? "Saved — updating the Pipedrive sheet and GTM report now" : "Saved";
     setTimeout(refresh, 600);
   } catch (e) { alert(e.message); refresh(); }
   finally { sel.disabled = false; }
@@ -425,7 +425,7 @@ async function openDrawer(id) {
     if (!sel.value) return; const msg = $("#aeMsg"); msg.textContent = "Saving…";
     try {
       const d = await readResponse(await fetch(`/api/leads/${id}/owner`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ owner: sel.value }) }));
-      msg.textContent = d.synced ? "Saved — updating the Pipedrive sheet and GTM report now." : d.pending_push ? "Saved — goes to the Pipedrive sheet on your next ↑ Push." : "Saved.";
+      msg.textContent = d.synced ? "Saved — updating the Pipedrive sheet and GTM report now." : "Saved.";
       refresh();
     } catch (e) { msg.textContent = e.message; }
   });

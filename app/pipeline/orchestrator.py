@@ -103,6 +103,13 @@ def rescreen(lead_id: int) -> None:
     if _canon((latest.get("chosen") or {}).get("url", "")) == _canon(chosen.get("url", "")):
         fields.update(chosen=chosen, screening=summary, screened=1 if summary else 0)
     db.update_lead(lead_id, **fields)
+    if on_lead_changed:
+        on_lead_changed(lead_id)        # new verdict -> Qualification Status in the sheet
+
+
+# Set by the app: called after a background change to a finished lead, so the
+# Pipedrive sheet picks it up right away.
+on_lead_changed = None
 
 
 def start_rescreen(lead_id: int) -> None:

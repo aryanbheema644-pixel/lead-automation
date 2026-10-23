@@ -220,8 +220,10 @@ def _run_cycle(trigger: str) -> dict:
             orchestrator.start_worker()
             while orchestrator.is_running() and not _scheduler_stop.is_set():
                 time.sleep(1)
-            if config.GOOGLE_DEST_SHEET_ID and not _push_paused():
-                pushed = _locked_sync()           # also updates the GTM report
+            if config.GOOGLE_DEST_SHEET_ID:
+                # Push paused = add nothing new, but still update rows already
+                # in the sheet (merges, AE changes, …). Also updates the GTM report.
+                pushed = _locked_sync(add_new=not _push_paused())
                 result.update(added=pushed["added"], updated=pushed["updated"],
                               in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
                 for k in ("report", "report_issue"):
@@ -277,12 +279,12 @@ def _start_scheduler() -> None:
         _scheduler_thread.start()
 
 
-def _locked_sync() -> dict:
+def _locked_sync(add_new: bool = True) -> dict:
     """Push to the destination (Pipedrive) sheet, then update the weekly GTM
     report from what's now in it — the report follows the outflow only, whether
     the push came from the button or the automation."""
     with _sync_lock:
-        out = _sync_dest()
+        out = _sync_dest(add_new)
         if config.GTM_SHEET_ID:
             try:
                 rep = gtm.sync_report()
@@ -1045,8 +1047,10 @@ def _find_dest_row(values: list[list[str]], cols: dict[str, int],
     return (exact or matches)[0]
 
 
-def _sync_dest() -> dict:
+def _sync_dest(add_new: bool = True) -> dict:
     """Make the destination sheet reflect the decided leads, editing in place.
+    add_new=False only updates rows already in the sheet (used while push
+    automation is paused: edits to pushed leads still flow, nothing new is added).
 
     - accepted leads never pushed           -> appended as one complete row
     - pushed leads whose values changed     -> only the changed cells rewritten
@@ -1066,6 +1070,8 @@ def _sync_dest() -> dict:
     held = [l for l in all_leads if l.get("status") == "accepted" and l["id"] in in_doubt and not l.get("pushed")]
     leads = [l for l in all_leads if (l.get("status") == "accepted" and l not in held)
              or (l.get("status") in ("rejected", "duplicate") and l.get("pushed"))]
+    if not add_new:
+        leads = [l for l in leads if l.get("pushed")]
     out = {"added": 0, "updated": 0, "unchanged": 0, "incomplete": [],
            "in_review": sum(1 for l in all_leads if l.get("status") == "review"),
            "duplicate_check": len(held)}
@@ -1121,7 +1127,7 @@ def _sync_dest() -> dict:
             continue
         row = _find_dest_row(values, cols, l.get("sheet_row"), snap or f)
         if row is None:
-            if l.get("status") == "accepted" and l["id"] not in in_doubt:
+            if add_new and l.get("status") == "accepted" and l["id"] not in in_doubt:
                 to_add.append((l, f))      # deleted from the sheet but changed since
             continue
         # Diff against what we last wrote; for leads pushed before snapshots
@@ -1329,6 +1335,7 @@ def accept_as_is(lead_id: int) -> JSONResponse:
         fields["owner"] = distribution.assign_owner(lead)
     db.update_lead(lead_id, status="accepted",
                    reasoning="Accepted by reviewer. " + (lead.get("reasoning") or ""), **fields)
+    _sync_soon()
     return JSONResponse({"ok": True})
 
 
@@ -1370,7 +1377,8 @@ def choose(lead_id: int, body: dict) -> JSONResponse:
         **fields,
     )
     if rescreen:
-        orchestrator.start_rescreen(lead_id)
+        orchestrator.start_rescreen(lead_id)    # syncs again when the verdict lands
+    _sync_soon()
     return JSONResponse({"ok": True})
 
 
@@ -1384,6 +1392,8 @@ def reject(lead_id: int) -> JSONResponse:
         fields["owner"] = None             # never reached an AE: free the assignment
     db.update_lead(lead_id, status="rejected",
                    reasoning="Manually rejected by reviewer.", **fields)
+    if lead.get("pushed"):
+        _sync_soon()                       # its sheet row shows "rejected"
     return JSONResponse({"ok": True})
 
 
@@ -1419,12 +1429,19 @@ def _ae_names() -> list[str]:
 
 
 def _sync_soon() -> bool:
-    """Push changes of already-pushed leads right away when push automation is
-    playing (or automation is off). If push is paused, the next Push does it."""
-    if config.GOOGLE_DEST_SHEET_ID and not (config.SCHEDULER_ENABLED and _push_paused()):
-        threading.Thread(target=lambda: _safe(_locked_sync), daemon=True).start()
-        return True
-    return False
+    """Bring the Pipedrive sheet up to date right away, in the background, after a
+    lead was edited (AE, profile, accept/reject, duplicate decision, re-screen).
+    Rows already in the sheet are always updated; new leads are only added when
+    push automation is playing (or automation is off) — paused means "add
+    nothing new", not "freeze the sheet"."""
+    if not config.GOOGLE_DEST_SHEET_ID:
+        return False
+    add_new = not (config.SCHEDULER_ENABLED and _push_paused())
+    threading.Thread(target=lambda: _safe(lambda: _locked_sync(add_new)), daemon=True).start()
+    return True
+
+
+orchestrator.on_lead_changed = lambda _lead_id: _sync_soon()   # e.g. a re-screen finished
 
 
 def _safe(fn) -> None:
