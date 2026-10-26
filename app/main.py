@@ -46,18 +46,6 @@ def _startup() -> None:
         threading.Thread(target=_backfill_heard_about, daemon=True).start()
     if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
         threading.Thread(target=_fix_old_visas, daemon=True).start()
-    if config.GTM_SHEET_ID and db.meta_get("gtm_date_fix_v1") != "1":
-        # Move counts that landed in future weeks (day/month-swapped source
-        # dates) to the right week. Only re-counts leads already in the
-        # Pipedrive sheet; pushes nothing.
-        def _gtm_fix():
-            try:
-                with _sync_lock:
-                    db.meta_set("gtm_date_fix_result", json.dumps(gtm.sync_report()))
-                db.meta_set("gtm_date_fix_v1", "1")
-            except Exception as e:  # noqa: BLE001 — retried on next start
-                db.meta_set("gtm_date_fix_result", json.dumps({"error": str(e)[:200]}))
-        threading.Thread(target=_gtm_fix, daemon=True).start()
     db.relabel_channel("Upload", _NO_CHANNEL)
     dedupe.backfill_prior_status()
     if db.meta_get("dedupe_scanned") != "1":
@@ -280,16 +268,14 @@ def _start_scheduler() -> None:
 
 
 def _locked_sync(add_new: bool = True) -> dict:
-    """Push to the destination (Pipedrive) sheet, then update the weekly GTM
-    report from what's now in it — the report follows the outflow only, whether
-    the push came from the button or the automation."""
+    """Push to the destination (Pipedrive) sheet, then recount this week and
+    last week in the GTM report from the source sheet (see gtm.py)."""
     with _sync_lock:
         out = _sync_dest(add_new)
         if config.GTM_SHEET_ID:
             try:
-                rep = gtm.sync_report()
-                out["report"] = {"added": rep["added"], "removed": rep["removed"],
-                                 "skipped": len(rep["skipped"])}
+                rep = gtm.recount(_channel_from_tab)
+                out["report"] = {"changed": rep["changed"], "skipped": len(rep["skipped"])}
                 if rep["skipped"]:
                     out["report_issue"] = rep["skipped"][0][:200]
             except Exception as e:  # noqa: BLE001 — a report problem must not fail the push
