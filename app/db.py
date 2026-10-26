@@ -173,36 +173,34 @@ def insert_lead(name: str, company: str, email: str, phone: str, message: str,
 
 
 def analytics() -> dict:
-    """Aggregate counts for the dashboard charts: by channel, status, fit tier,
-    and by day (last 14). Cheap — the leads table only holds processed leads."""
+    """One compact row per lead for the dashboard charts, which filter by period
+    in the browser: [day, channel, status, fit tier, owner]. `day` is the lead's
+    "Date of lead" (else the day LeadSearch picked it up). Merged duplicates are
+    left out — they're the same person as another lead."""
     import datetime as _dt
-    channels: dict = {}
-    statuses: dict = {}
-    tiers: dict = {}
-    owners: dict = {}
-    by_day: dict = {}
+    from .gtm import _parse_date
     with _conn() as conn:
-        rows = conn.execute(
-            "SELECT channel, status, screening, owner, created_at FROM leads").fetchall()
+        rows = conn.execute("SELECT channel, status, screening, owner, lead_date, created_at "
+                            "FROM leads WHERE status != 'duplicate'").fetchall()
+    out = []
     for r in rows:
-        ch = r["channel"] or "Not provided"
-        channels[ch] = channels.get(ch, 0) + 1
-        st = r["status"] or "?"
-        statuses[st] = statuses.get(st, 0) + 1
-        if r["owner"]:
-            owners[r["owner"]] = owners.get(r["owner"], 0) + 1
+        picked = _dt.datetime.utcfromtimestamp(r["created_at"] or 0).date()
+        d = _parse_date(r["lead_date"] or "")
+        if d and d > picked + _dt.timedelta(days=1):       # day/month swapped in the source
+            try:
+                d = _dt.date(d.year, d.day, d.month)
+            except ValueError:
+                d = None
+            d = d if d and d <= picked + _dt.timedelta(days=1) else picked
+        tier = None
         if r["screening"]:
             try:
                 tier = (json.loads(r["screening"]) or {}).get("tier")
             except (json.JSONDecodeError, TypeError):
                 tier = None
-            if tier:
-                tiers[tier] = tiers.get(tier, 0) + 1
-        if r["created_at"]:
-            d = _dt.datetime.utcfromtimestamp(r["created_at"]).strftime("%Y-%m-%d")
-            by_day[d] = by_day.get(d, 0) + 1
-    return {"channels": channels, "statuses": statuses, "tiers": tiers,
-            "owners": owners, "by_day": sorted(by_day.items())[-14:]}
+        out.append([(d or picked).isoformat(), r["channel"] or "Not provided", r["status"] or "?",
+                    tier or "", r["owner"] or ""])
+    return {"rows": out}
 
 
 def update_lead(lead_id: int, **fields: Any) -> None:

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LeadSearch</title>
-  <link rel="stylesheet" href="/static/styles.css?v=31" />
+  <link rel="stylesheet" href="/static/styles.css?v=32" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -63,7 +63,7 @@
               <p class="subtle">Here's an overview of your lead pipeline today.</p>
             </div>
             <div class="toolbar">
-              <span class="daterange"><svg width="18" height="18" viewBox="0 0 24 24" class="s-ico"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg> Last 7 days</span>
+              <label class="daterange"><svg width="18" height="18" viewBox="0 0 24 24" class="s-ico"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg><select id="rangeAll" class="daterange-sel" aria-label="Period for all charts"><option value="7">All charts: last 7 days</option><option value="14">All charts: last 14 days</option><option value="30">All charts: last 30 days</option><option value="all">All charts: all time</option><option value="mixed" hidden>Charts: mixed periods</option></select></label>
               <button id="runBtn" class="btn primary">▶ Run pipeline</button>
               <button id="pullBtn" class="btn ghost" hidden>↓ Pull</button>
               <button id="pushBtn" class="btn ghost" hidden>↑ Push</button>
@@ -79,26 +79,26 @@
 
           <div class="analytics">
             <div class="panel chart-card">
-              <div class="cc-head"><div><h3>Leads by Channel</h3><p class="cc-sub">Distribution across sources</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="cc-head"><div><h3>Leads by Channel</h3><p class="cc-sub">Distribution across sources</p></div><select class="chip-sel range-sel" data-chart="channels" aria-label="Period"><option value="7" selected>Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select></div>
               <div class="chart-wrap"><canvas id="chChannels"></canvas></div>
             </div>
             <div class="panel chart-card">
-              <div class="cc-head"><div><h3>Outcomes</h3><p class="cc-sub">Overall lead outcomes</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="cc-head"><div><h3>Outcomes</h3><p class="cc-sub">Overall lead outcomes</p></div><select class="chip-sel range-sel" data-chart="outcomes" aria-label="Period"><option value="7" selected>Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select></div>
               <div class="outcomes">
                 <div class="donut-wrap"><canvas id="chOutcomes"></canvas><div class="donut-center"><div class="dc-num" id="ocTotal">0</div><div class="dc-lbl">Total Leads</div></div></div>
                 <ul class="oc-legend" id="ocLegend"></ul>
               </div>
             </div>
             <div class="panel chart-card">
-              <div class="cc-head"><div><h3>Fit Verdicts</h3><p class="cc-sub">LLM / AE fit assessment</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="cc-head"><div><h3>Fit Verdicts</h3><p class="cc-sub">LLM / AE fit assessment</p></div><select class="chip-sel range-sel" data-chart="tiers" aria-label="Period"><option value="7" selected>Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select></div>
               <div class="chart-wrap"><canvas id="chTiers"></canvas></div>
             </div>
             <div class="panel chart-card">
-              <div class="cc-head"><div><h3>AE Workload</h3><p class="cc-sub">Leads per Account Executive</p></div><span class="chip-sel">Last 7 days ▾</span></div>
+              <div class="cc-head"><div><h3>AE Workload</h3><p class="cc-sub">Leads per Account Executive</p></div><select class="chip-sel range-sel" data-chart="owners" aria-label="Period"><option value="7" selected>Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select></div>
               <div class="chart-wrap"><canvas id="chOwners"></canvas></div>
             </div>
             <div class="panel chart-card wide">
-              <div class="cc-head"><div><h3>Leads Over Time</h3><p class="cc-sub">Daily pipeline activity</p></div><span class="chip-sel">Last 14 days ▾</span></div>
+              <div class="cc-head"><div><h3>Leads Over Time</h3><p class="cc-sub">Leads per day (date of lead)</p></div><select class="chip-sel range-sel" data-chart="time" aria-label="Period"><option value="7" selected>Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select></div>
               <div class="chart-wrap"><canvas id="chTime"></canvas></div>
             </div>
           </div>
@@ -249,6 +249,6 @@
   <div id="drawer" class="drawer">
     <div class="drawer-panel"><button class="drawer-close" id="drawerClose">✕</button><div id="drawerBody"></div></div>
   </div>
-  <script src="/static/app.js?v=40"></script>
+  <script src="/static/app.js?v=41"></script>
 </body>
 </html>

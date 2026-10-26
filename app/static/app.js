@@ -4,6 +4,7 @@ function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&am
 // Only touch the DOM when the markup actually changed — the dashboard polls every
 // 2s while running, and blind re-renders make the page flicker and jump.
 function setHTML(el, html) { if (!el || el._html === html) return false; el._html = html; el.innerHTML = html; return true; }
+const _isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 async function readResponse(r) {
   const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = { detail: t.slice(0, 300) || `HTTP ${r.status}` }; }
@@ -369,13 +370,47 @@ function _axisOpts() { const grid = cssVar("--border"), tick = cssVar("--muted")
 function _bar(labels, data) { return { type: "bar", data: { labels, datasets: [{ data, backgroundColor: (c) => _grad(c, "--bar-top", "--bar-bot"), borderRadius: 7, maxBarThickness: 46 }] }, options: _axisOpts() }; }
 function _line(labels, data) { return { type: "line", data: { labels, datasets: [{ data, borderColor: cssVar("--accent"), backgroundColor: (c) => _grad(c, "--accent", "--bg"), fill: true, tension: .35, pointRadius: 2, pointBackgroundColor: cssVar("--accent") }] }, options: _axisOpts() }; }
 function _donut(data, colors) { return { type: "doughnut", data: { labels: ["Accepted", "In Review", "Rejected"], datasets: [{ data, backgroundColor: colors, borderColor: cssVar("--panel"), borderWidth: 3 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: "70%", plugins: { legend: { display: false } } } }; }
+// Each chart has its own period (remembered per browser). Rows come per lead:
+// [day, channel, status, tier, owner]; day = the lead's date.
+let _anRows = null;
+const _range = { channels: "7", outcomes: "7", tiers: "7", owners: "7", time: "7" };
+try { Object.assign(_range, JSON.parse(localStorage.getItem("ls-ranges") || "{}")); } catch {}
+document.querySelectorAll(".range-sel").forEach((s) => {
+  s.value = _range[s.dataset.chart] || s.value;
+  s.addEventListener("change", () => { _range[s.dataset.chart] = s.value; try { localStorage.setItem("ls-ranges", JSON.stringify(_range)); } catch {} syncRangeAll(); drawAnalytics(); });
+});
+function syncRangeAll() {           // the toolbar picker shows the shared period, if any
+  const v = new Set(Object.values(_range)); $("#rangeAll").value = v.size === 1 ? [...v][0] : "mixed";
+}
+syncRangeAll();
+$("#rangeAll").addEventListener("change", (e) => {
+  if (e.target.value === "mixed") return;
+  Object.keys(_range).forEach((k) => (_range[k] = e.target.value));
+  document.querySelectorAll(".range-sel").forEach((s) => (s.value = e.target.value));
+  try { localStorage.setItem("ls-ranges", JSON.stringify(_range)); } catch {}
+  drawAnalytics();
+});
+const _dayAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return _isoDay(d); };
+const _inRange = (chart) => { const r = _range[chart]; if (r === "all") return _anRows; const from = _dayAgo(+r - 1); return _anRows.filter((x) => x[0] >= from); };
+const _tally = (rows, i, skip = "") => rows.reduce((m, x) => { if (x[i] && x[i] !== skip) m[x[i]] = (m[x[i]] || 0) + 1; return m; }, {});
 async function loadAnalytics() {
   if (!_ready()) { setTimeout(loadAnalytics, 400); return; }
   let a; try { a = await (await fetch("/api/analytics")).json(); } catch { return; }
-  const ch = a.channels || {}; _draw("chChannels", _bar(Object.keys(ch).length ? Object.keys(ch) : ["—"], Object.values(ch).length ? Object.values(ch) : [0]));
-  const ti = a.tiers || {}; const tl = Object.keys(ti); _draw("chTiers", _bar(tl.length ? tl : ["—"], tl.length ? tl.map((k) => ti[k]) : [0]));
-  const ow = a.owners || {}; const ol = Object.keys(ow); _draw("chOwners", _bar(ol.length ? ol : ["—"], ol.length ? ol.map((k) => ow[k]) : [0]));
-  const days = a.by_day || []; const series = days.map((d) => d[1]); _draw("chTime", _line(days.map((d) => d[0].slice(5)), series));
+  _anRows = a.rows || [];
+  drawAnalytics();
+}
+function drawAnalytics() {
+  if (!_anRows) return;
+  const barOf = (m) => { const k = Object.keys(m).sort((x, y) => m[y] - m[x]); return _bar(k.length ? k : ["—"], k.length ? k.map((x) => m[x]) : [0]); };
+  _draw("chChannels", barOf(_tally(_inRange("channels"), 1)));
+  _draw("chTiers", barOf(_tally(_inRange("tiers"), 3)));
+  _draw("chOwners", barOf(_tally(_inRange("owners").filter((x) => x[2] === "accepted"), 4)));
+  // Leads over time: every day in the period, zero days included.
+  const tr = _inRange("time"), perDay = _tally(tr, 0);
+  const first = _range.time === "all" ? (Object.keys(perDay).sort()[0] || _dayAgo(0)) : _dayAgo(+_range.time - 1);
+  const labels = []; for (let d = new Date(first + "T00:00"); _isoDay(d) <= _dayAgo(0); d.setDate(d.getDate() + 1)) labels.push(_isoDay(d));
+  _draw("chTime", _line(labels.map((d) => d.slice(5)), labels.map((d) => perDay[d] || 0)));
+  const a = { statuses: _tally(_inRange("outcomes"), 2) };
   // Outcomes donut + legend
   const oc = a.statuses || {}, acc = oc.accepted || 0, rev = oc.review || 0, rej = oc.rejected || 0, tot = acc + rev + rej;
   const sw = [cssVar("--accent"), cssVar("--accent-2"), cssVar("--faint")];
@@ -387,7 +422,9 @@ async function loadAnalytics() {
     <span class="lg"><span class="sw" style="background:${color}"></span>${lbl}</span>
     <span class="cnt">${n}</span><span class="pct">${pct(n)}</span>
     <span class="bar"><span style="width:${tot ? (n / tot * 100) : 0}%;background:${color}"></span></span></li>`).join(""));
-  // sparklines + total trend: stored for loadStats, re-render tiles only if changed
+  // sparklines + total trend (always the last 14 days): stored for loadStats,
+  // re-render tiles only if changed
+  const all = _tally(_anRows, 0), series = [...Array(14)].map((_, i) => all[_dayAgo(13 - i)] || 0);
   const sp = sparkline(series.length ? series : [tot, tot]);
   let trend = { text: "", cls: "trend" };
   if (series.length >= 2) { const half = Math.ceil(series.length / 2), older = series.slice(0, half).reduce((x, y) => x + y, 0), recent = series.slice(half).reduce((x, y) => x + y, 0); const pc = older ? Math.round((recent - older) / older * 100) : (recent ? 100 : 0); trend = { text: `${pc >= 0 ? "↗" : "↘"} ${Math.abs(pc)}%`, cls: "trend " + (pc >= 0 ? "up" : "down") }; }
@@ -456,7 +493,6 @@ let _pdNew = new Set();
 const pdId = (e) => `${e.row}|${e.key}`;
 const pdDeal = (e, domain) => e.deal_id && domain ? `<a href="https://${esc(domain)}.pipedrive.com/deal/${e.deal_id}" target="_blank">${esc(e.title)} ↗</a>` : esc(e.title);
 const pdWhat = (e) => `<div class="subtle">${e.actions.map(esc).join("<br>")}${e.notes.length ? "<br>⚠ " + e.notes.map(esc).join("<br>⚠ ") : ""}</div>`;
-const _isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 function pdWhen(day) {                        // weeks start on Sunday, like the GTM report
   const now = new Date(), y = new Date(now), ws = new Date(now), lws = new Date(now);
   y.setDate(now.getDate() - 1); ws.setDate(now.getDate() - now.getDay()); lws.setDate(ws.getDate() - 7);
