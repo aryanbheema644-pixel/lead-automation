@@ -1166,6 +1166,25 @@ def sheets_push() -> JSONResponse:
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/gtm")
+def gtm_last() -> JSONResponse:
+    """The last GTM recount (this week and last week), lead by lead."""
+    return JSONResponse({**gtm.last(), "sheet_id": config.GTM_SHEET_ID})
+
+
+@app.post("/api/gtm/recount")
+def gtm_recount() -> JSONResponse:
+    """Recount this week and last week now (the automation does it every cycle)."""
+    if not config.GTM_SHEET_ID:
+        raise HTTPException(400, "No GTM sheet configured (GTM_SHEET_ID).")
+    try:
+        with _sync_lock:
+            rep = gtm.recount(_channel_from_tab)
+    except sheets.SheetsError as e:
+        raise HTTPException(400, str(e))
+    return JSONResponse({**gtm.last(), "changed": rep["changed"], "sheet_id": config.GTM_SHEET_ID})
+
+
 @app.get("/api/pipedrive/preview")
 def pipedrive_preview() -> JSONResponse:
     """Dry run: what syncing the Pipedrive sheet would create / link / update in

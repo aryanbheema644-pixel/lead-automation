@@ -20,7 +20,7 @@ $("#themeToggle").addEventListener("click", () => {
 });
 
 // ── Router ──────────────────────────────────────────────────────────────────
-const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", written: "Written on Pipedrive" };
+const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", gtm: "GTM report", written: "Written on Pipedrive" };
 // "#leads/rejected" opens the Leads page filtered to that status (dashboard tiles link here).
 let _statusFilter = "all";
 function setPage(hash) {
@@ -449,29 +449,86 @@ const _PD_LABEL = { create: "New deal", link: "Has a deal already", update: "Cha
 const _PD_DONE = { create: "Deal created", link: "Linked", update: "Updated", error: "Error" };
 const _PD_WRITABLE = new Set(["create", "link", "update"]);
 let _pdPlan = null;
+// Segments + filters. The selection is kept by lead (row|key), so switching a
+// segment or filter never loses what's ticked; Write on Pipe writes all of it.
+const _pdSel = new Set(), _pdF = { seg: "all", when: "all", ae: "all", source: "all", newOnly: false };
+let _pdNew = new Set();
+const pdId = (e) => `${e.row}|${e.key}`;
 const pdDeal = (e, domain) => e.deal_id && domain ? `<a href="https://${esc(domain)}.pipedrive.com/deal/${e.deal_id}" target="_blank">${esc(e.title)} ↗</a>` : esc(e.title);
 const pdWhat = (e) => `<div class="subtle">${e.actions.map(esc).join("<br>")}${e.notes.length ? "<br>⚠ " + e.notes.map(esc).join("<br>⚠ ") : ""}</div>`;
-function pdRender(d) {
-  _pdPlan = d;
-  setHTML($("#pdCounts"), Object.entries(d.counts).filter(([, n]) => n).map(([k, n]) => `<span class="pd-tag pd-${k}">${_PD_LABEL[k] || k}: <b>${n}</b></span>`).join(""));
-  // Leads already written and unchanged since live on the "Written on Pipedrive"
-  // page, so the list here only shows what still needs a decision.
-  const synced = d.plan.filter((e) => e.status === "unchanged").length;
-  setHTML($("#pdSynced"), synced ? `${synced} lead(s) already synced and unchanged are hidden here: see <a href="#written">Written on Pipedrive</a>.` : "");
-  setHTML($("#pdRows"), d.plan.map((e, i) => e.status === "unchanged" ? "" : `<tr><td>${_PD_WRITABLE.has(e.status) ? `<input type="checkbox" class="pd-pick" data-i="${i}" />` : ""}</td><td>${e.row}</td><td><b>${esc(e.name)}</b><div class="subtle">${esc(e.email)}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
-    <td><span class="pd-tag pd-${e.status}">${_PD_LABEL[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">${d.plan.length ? "Everything in the sheet is already synced. 🎉" : "The Pipedrive sheet is empty."}</td></tr>`);
-  $("#pdAll").checked = false; $("#pdAll").disabled = !d.plan.some((e) => _PD_WRITABLE.has(e.status));
-  pdPicked();
+const _isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function pdWhen(day) {                        // weeks start on Sunday, like the GTM report
+  const now = new Date(), y = new Date(now), ws = new Date(now), lws = new Date(now);
+  y.setDate(now.getDate() - 1); ws.setDate(now.getDate() - now.getDay()); lws.setDate(ws.getDate() - 7);
+  const tags = [];
+  if (!day) return ["older"];
+  if (day === _isoDay(now)) tags.push("today");
+  if (day === _isoDay(y)) tags.push("yesterday");
+  if (day >= _isoDay(ws)) tags.push("week");
+  else if (day >= _isoDay(lws)) tags.push("lastweek");
+  else tags.push("older");
+  return tags;
 }
-function pdPicked() {
-  const n = document.querySelectorAll(".pd-pick:checked").length, b = $("#pdWriteBtn");
+function pdMatch(e, ignoreSeg) {
+  const f = _pdF;
+  if (!ignoreSeg && f.seg !== "all" && e.status !== f.seg) return false;
+  if (f.when !== "all" && !pdWhen(e.day).includes(f.when)) return false;
+  if (f.ae !== "all" && (e.owner || "—") !== f.ae) return false;
+  if (f.source !== "all" && (e.source || "—") !== f.source) return false;
+  if (f.newOnly && !_pdNew.has(pdId(e))) return false;
+  return true;
+}
+function pdOptions(sel, label, values, cur) {
+  setHTML(sel, `<option value="all">All ${label}</option>` + values.map((v) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(v)}</option>`).join(""));
+  sel.value = values.includes(cur) ? cur : "all";
+}
+function pdRender(d) {
+  if (d) {
+    _pdPlan = d;
+    const live = new Set(d.plan.filter((e) => _PD_WRITABLE.has(e.status)).map(pdId));
+    [..._pdSel].forEach((k) => { if (!live.has(k)) _pdSel.delete(k); });
+    pdOptions($("#pdAe"), "AEs", [...new Set(d.plan.map((e) => e.owner || "—"))].sort(), _pdF.ae);
+    pdOptions($("#pdSource"), "sources", [...new Set(d.plan.map((e) => e.source || "—"))].sort(), _pdF.source);
+    _pdF.ae = $("#pdAe").value; _pdF.source = $("#pdSource").value;
+    $("#pdFilters").hidden = $("#pdSelbar").hidden = false;
+  }
+  d = _pdPlan; if (!d) return;
+  const todo = d.plan.map((e, i) => ({ ...e, i })).filter((e) => e.status !== "unchanged");
+  // Segment chips count what the other filters leave, so the numbers match the table.
+  const base = todo.filter((e) => pdMatch(e, true)), by = {};
+  base.forEach((e) => (by[e.status] = (by[e.status] || 0) + 1));
+  const chip = (k, label, n) => `<button class="chan-chip${_pdF.seg === k ? " active" : ""}" data-seg="${k}" role="tab" aria-selected="${_pdF.seg === k}">${label} <span class="n">${n}</span></button>`;
+  setHTML($("#pdSegs"), chip("all", "All", base.length) + ["create", "link", "update", "skipped", "error"].filter((k) => by[k] || _pdF.seg === k).map((k) => chip(k, _PD_LABEL[k], by[k] || 0)).join(""));
+  $("#pdNewN").textContent = _pdNew.size ? `(${todo.filter((e) => _pdNew.has(pdId(e))).length})` : "";
+  const synced = d.plan.length - todo.length;
+  setHTML($("#pdSynced"), synced ? `${synced} lead(s) already synced and unchanged are hidden here: see <a href="#written">Written on Pipedrive</a>.` : "");
+  const shown = todo.filter((e) => pdMatch(e));
+  setHTML($("#pdRows"), shown.map((e) => `<tr><td>${_PD_WRITABLE.has(e.status) ? `<input type="checkbox" class="pd-pick" data-id="${esc(pdId(e))}"${_pdSel.has(pdId(e)) ? " checked" : ""} />` : ""}</td><td>${e.row}</td><td><b>${esc(e.name)}</b>${_pdNew.has(pdId(e)) ? '<span class="pd-new">NEW</span>' : ""}<div class="subtle">${esc(e.email)}${e.day ? " · " + esc(e.day) : ""}${e.source ? " · " + esc(e.source) : ""}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
+    <td><span class="pd-tag pd-${e.status}">${_PD_LABEL[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="empty">${!d.plan.length ? "The Pipedrive sheet is empty." : !todo.length ? "Everything in the sheet is already synced. 🎉" : "No leads match these filters."}</td></tr>`);
+  const nNew = base.filter((e) => e.status === "create").length, nLink = base.filter((e) => e.status === "link").length;
+  $("#pdPickNew").textContent = `Select all new deals (${nNew})`; $("#pdPickNew").disabled = !nNew;
+  $("#pdPickLink").textContent = `Select all with a deal (${nLink})`; $("#pdPickLink").disabled = !nLink;
+  const vis = shown.filter((e) => _PD_WRITABLE.has(e.status));
+  $("#pdAll").checked = vis.length > 0 && vis.every((e) => _pdSel.has(pdId(e))); $("#pdAll").disabled = !vis.length;
+  pdPicked(shown.length, todo.length);
+}
+function pdPicked(shown, total) {
+  const n = _pdSel.size, b = $("#pdWriteBtn");
   b.disabled = !n; b.textContent = n ? `Write on Pipe (${n})` : "Write on Pipe";
+  if (shown !== undefined) $("#pdShown").textContent = `Showing ${shown} of ${total}` + (n ? ` · ${n} selected` : "");
+  else if (_pdPlan) $("#pdShown").textContent = $("#pdShown").textContent.replace(/ · \d+ selected$/, "") + (n ? ` · ${n} selected` : "");
 }
 async function pdPreview(note) {
   const b = $("#pdPreviewBtn"), m = $("#pdMsg"); b.disabled = true;
   if (!note) { m.className = "msg"; m.textContent = "Reading the sheet and Pipedrive (read-only)…"; }
   try {
     const d = await readResponse(await fetch("/api/pipedrive/preview"));
+    let prev = null; try { prev = JSON.parse(localStorage.getItem("ls-pd-seen") || "null"); } catch {}
+    if (!note) {
+      _pdNew = new Set(prev ? d.plan.map(pdId).filter((k) => !prev.includes(k)) : []);
+      try { localStorage.setItem("ls-pd-seen", JSON.stringify(d.plan.map(pdId))); } catch {}
+    }
     if (!note) { m.className = "msg ok"; m.textContent = `Preview only, nothing written · pipeline “${d.pipeline}” → stage “${d.stage}”` + (d.missing_fields.length ? ` · not in Pipedrive: ${d.missing_fields.join(", ")}` : ""); }
     pdRender(d);
   } catch (e) { m.className = "msg err"; m.textContent = (note ? note + " · " : "") + e.message; }
@@ -483,8 +540,23 @@ async function pdLoadWritten() {
   setHTML($("#pdWritten"), d.written.map((e) => `<tr><td>${new Date(e.at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td><td><b>${esc(e.name)}</b><div class="subtle">${esc(e.email)}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
     <td><span class="pd-tag pd-${e.status}">${_PD_DONE[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing written yet.</td></tr>`);
 }
-$("#pdRows").addEventListener("change", (e) => { if (e.target.classList.contains("pd-pick")) pdPicked(); });
-$("#pdAll").addEventListener("change", (e) => { document.querySelectorAll(".pd-pick").forEach((c) => (c.checked = e.target.checked)); pdPicked(); });
+$("#pdRows").addEventListener("change", (e) => {
+  const c = e.target; if (!c.classList.contains("pd-pick")) return;
+  c.checked ? _pdSel.add(c.dataset.id) : _pdSel.delete(c.dataset.id); pdRender();
+});
+$("#pdAll").addEventListener("change", (e) => {   // ticks / unticks the rows on screen
+  document.querySelectorAll(".pd-pick").forEach((c) => (e.target.checked ? _pdSel.add(c.dataset.id) : _pdSel.delete(c.dataset.id)));
+  pdRender();
+});
+$("#pdSegs").addEventListener("click", (e) => { const b = e.target.closest("[data-seg]"); if (b) { _pdF.seg = b.dataset.seg; pdRender(); } });
+[["#pdWhen", "when"], ["#pdAe", "ae"], ["#pdSource", "source"]].forEach(([s, k]) => $(s).addEventListener("change", (e) => { _pdF[k] = e.target.value; pdRender(); }));
+$("#pdNewOnly").addEventListener("change", (e) => { _pdF.newOnly = e.target.checked; pdRender(); });
+$("#pdSelbar").addEventListener("click", (e) => {   // select by kind, within the date/AE/source filters
+  const b = e.target.closest("[data-pick]"); if (!b || !_pdPlan) return;
+  if (b.dataset.pick === "none") _pdSel.clear();
+  else _pdPlan.plan.filter((x) => x.status === b.dataset.pick && pdMatch(x, true)).forEach((x) => _pdSel.add(pdId(x)));
+  pdRender();
+});
 $("#pdPreviewBtn").addEventListener("click", () => pdPreview());
 // In-page confirm (the desktop app's browser blocks window.confirm, which made
 // the button silently do nothing). Resolves true on "Write on Pipe".
@@ -509,7 +581,7 @@ function pdProgress(j) {
   $("#pdBarFill").style.width = (total ? Math.round((done / total) * 100) : 0) + "%";
 }
 $("#pdWriteBtn").addEventListener("click", async () => {
-  const picks = [...document.querySelectorAll(".pd-pick:checked")].map((c) => _pdPlan.plan[+c.dataset.i]);
+  const picks = _pdPlan.plan.filter((e) => _pdSel.has(pdId(e)));
   if (!picks.length || !(await pdConfirm(picks))) return;
   const b = $("#pdWriteBtn"), m = $("#pdMsg"); b.disabled = true; $("#pdPreviewBtn").disabled = true; m.className = "msg"; m.textContent = "";
   try {
@@ -521,8 +593,47 @@ $("#pdWriteBtn").addEventListener("click", async () => {
     const note = `Written to Pipedrive: ${picks.length - bad} lead(s)` + (bad ? `, ${bad} failed` : "") + " · details on the “Written on Pipedrive” page";
     m.className = bad ? "msg err" : "msg ok"; m.textContent = note;
     pdLoadWritten();
+    _pdSel.clear();
     await pdPreview(note);          // refresh the list: written leads drop out of it
   } catch (e) { m.className = "msg err"; m.textContent = e.message; pdPicked(); $("#pdPreviewBtn").disabled = false; }
   finally { setTimeout(() => ($("#pdProgress").hidden = true), 2500); }
 });
 pdLoadWritten();
+
+// ── GTM report: last recount, week by week, lead by lead ───────────────────
+let _gtm = null, _gtmWeek = "", _gtmKind = "all";
+const _GTM_KIND = { counted: "Counted", "re-engagement": "Re-engagement (not counted)", repeat: "Same person again (not counted)" };
+const _CHAN_TAB = { Meta: "Meta form", WhatsApp: "WhatsApp chatbot", Website: "Website form" };
+function gtmRender() {
+  const d = _gtm; if (!d || !d.weeks) { setHTML($("#gtmRows"), `<tr><td colspan="5" class="empty">No recount yet. Click “Recount now”.</td></tr>`); return; }
+  const weeks = Object.keys(d.weeks).sort().reverse();
+  if (!weeks.includes(_gtmWeek)) _gtmWeek = weeks[0];
+  const fmt = (iso) => new Date(iso + "T00:00").toLocaleDateString([], { day: "numeric", month: "short" });
+  setHTML($("#gtmWeeks"), weeks.map((w, i) => `<button class="chan-chip${w === _gtmWeek ? " active" : ""}" data-week="${w}" role="tab">${i === 0 ? "This week" : "Last week"} <span class="n">from ${fmt(w)}</span></button>`).join(""));
+  const c = d.weeks[_gtmWeek] || {}, rows = d.rows || Object.keys(c);
+  const inbound = rows.filter((r) => !r.endsWith(" - SQL")), ae = rows.filter((r) => r.endsWith(" - SQL"));
+  const total = inbound.reduce((s, r) => s + (c[r] || 0), 0);
+  const cell = (k, v, cls = "") => `<div class="gtm-cell ${cls}"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
+  setHTML($("#gtmNumbers"), cell("Inbound - Total", total, "total") + inbound.map((r) => cell(r, c[r] || 0)).join("") + ae.map((r) => cell(r, c[r] || 0, "ae")).join(""));
+  const leads = (d.detail || {})[_gtmWeek] || [], by = {};
+  leads.forEach((l) => (by[l.kind] = (by[l.kind] || 0) + 1));
+  setHTML($("#gtmKinds"), [["all", "All", leads.length], ...Object.keys(_GTM_KIND).map((k) => [k, _GTM_KIND[k], by[k] || 0])].map(([k, label, n]) => `<button class="chan-chip${_gtmKind === k ? " active" : ""}" data-kind="${k}" role="tab">${label} <span class="n">${n}</span></button>`).join(""));
+  const shown = leads.filter((l) => _gtmKind === "all" || l.kind === _gtmKind);
+  setHTML($("#gtmRows"), shown.map((l) => `<tr><td>${esc(fmt(l.date))}</td><td><b>${esc(l.name)}</b><div class="subtle">${esc(l.email || l.phone)}${l.form ? " · " + esc(l.form) : ""}</div></td><td>${esc(_CHAN_TAB[l.channel] || l.channel)}${l.heard ? `<div class="subtle">${esc(l.heard)}</div>` : ""}</td>
+    <td>${l.kind === "counted" ? esc(l.row) : `<span class="gtm-kind ${l.kind === "repeat" ? "repeat" : "reeng"}">${esc(_GTM_KIND[l.kind])}</span>`}</td><td>${l.kind === "counted" ? esc(l.ae || "Not distributed") : ""}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No leads here.</td></tr>`);
+}
+async function gtmLoad() {
+  try { _gtm = await readResponse(await fetch("/api/gtm")); } catch (e) { $("#gtmMsg").className = "msg err"; $("#gtmMsg").textContent = e.message; return; }
+  if (_gtm.sheet_id) { $("#gtmSheet").href = `https://docs.google.com/spreadsheets/d/${_gtm.sheet_id}`; $("#gtmSheet").hidden = false; }
+  if (_gtm.at) { $("#gtmMsg").className = "msg"; $("#gtmMsg").textContent = `Last recounted ${new Date(_gtm.at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · the automation recounts every cycle.`; }
+  gtmRender();
+}
+$("#gtmWeeks").addEventListener("click", (e) => { const b = e.target.closest("[data-week]"); if (b) { _gtmWeek = b.dataset.week; gtmRender(); } });
+$("#gtmKinds").addEventListener("click", (e) => { const b = e.target.closest("[data-kind]"); if (b) { _gtmKind = b.dataset.kind; gtmRender(); } });
+$("#gtmRecount").addEventListener("click", async () => {
+  const b = $("#gtmRecount"), m = $("#gtmMsg"); b.disabled = true; m.className = "msg"; m.textContent = "Recounting from the lead sheet and Pipedrive…";
+  try { const d = await readResponse(await fetch("/api/gtm/recount", { method: "POST" })); _gtm = d; gtmRender(); m.className = "msg ok"; m.textContent = d.changed ? `Recounted · ${d.changed} cell(s) updated in the GTM sheet.` : "Recounted · the GTM sheet was already up to date."; }
+  catch (e) { m.className = "msg err"; m.textContent = e.message; }
+  finally { b.disabled = false; }
+});
+gtmLoad();

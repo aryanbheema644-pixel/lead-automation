@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import time
 
 from gspread.utils import rowcol_to_a1
 
@@ -241,8 +242,8 @@ def recount(channel_of, weeks_back: int = 1, write: bool = True) -> dict:
     for d, c in weeks[max(0, idx - weeks_back): idx + 1]:
         res = count_week(d, channel_of)
         out["weeks"][d.isoformat()] = res["counts"]
+        out.setdefault("detail", {})[d.isoformat()] = res["leads"]
         if not write:
-            out.setdefault("detail", {})[d.isoformat()] = res["leads"]
             continue
         src = _template_col(formulas, weeks, c)
         if src is not None:
@@ -261,7 +262,18 @@ def recount(channel_of, weeks_back: int = 1, write: bool = True) -> dict:
     if writes:
         sheets.write_cells(ws, writes)
     out["changed"] = len(writes)
+    if write:                                     # what the GTM page shows
+        db.meta_set("gtm_last", json.dumps({"at": time.time(), "weeks": out["weeks"],
+                                            "detail": out["detail"], "rows": _week_rows()}))
     return out
+
+
+def last() -> dict:
+    """The last recount written to the sheet (for the GTM page)."""
+    try:
+        return json.loads(db.meta_get("gtm_last", "{}") or "{}")
+    except ValueError:
+        return {}
 
 
 def _copy_paste(ws, src_col: int, dst_col: int, rows: list[int] | None, paste_type: str) -> list:

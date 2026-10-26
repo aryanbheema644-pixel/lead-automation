@@ -26,6 +26,7 @@ import time
 import httpx
 
 from . import config, db, sheets
+from .gtm import _parse_date
 
 API = "https://api.pipedrive.com/v1"
 
@@ -243,8 +244,10 @@ def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> d
     for i, r in enumerate(rows):
         if progress:
             progress(i, len(rows), r.get("name", ""))
+        day = _parse_date(r.get("date of lead", ""))
         entry = {"row": r["_row"], "key": _row_key(r), "name": r.get("name", ""), "email": r.get("email", ""),
-                 "title": "", "owner": r.get("owner name", ""), "actions": [], "notes": []}
+                 "title": "", "owner": r.get("owner name", ""), "source": r.get("source", ""),
+                 "day": day.isoformat() if day else "", "actions": [], "notes": []}
         plan.append(entry)
         miss = [m for m, ok in (("name", r.get("name")), ("email/number", r.get("email") or r.get("number")),
                                 ("owner id", r.get("owner (ae) id")), ("source", r.get("source"))) if not ok]
