@@ -614,7 +614,7 @@ function gtmRender() {
   const inbound = rows.filter((r) => !r.endsWith(" - SQL")), ae = rows.filter((r) => r.endsWith(" - SQL"));
   const total = inbound.reduce((s, r) => s + (c[r] || 0), 0);
   const cell = (k, v, cls = "") => `<div class="gtm-cell ${cls}"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
-  setHTML($("#gtmNumbers"), cell("Inbound - Total", total, "total") + inbound.map((r) => cell(r, c[r] || 0)).join("") + ae.map((r) => cell(r, c[r] || 0, "ae")).join(""));
+  setHTML($("#gtmNumbers"), cell("Inbound counted (all channels)", total, "total") + inbound.map((r) => cell(r, c[r] || 0)).join("") + ae.map((r) => cell(r, c[r] || 0, "ae")).join(""));
   const leads = (d.detail || {})[_gtmWeek] || [], by = {};
   leads.forEach((l) => (by[l.kind] = (by[l.kind] || 0) + 1));
   setHTML($("#gtmKinds"), [["all", "All", leads.length], ...Object.keys(_GTM_KIND).map((k) => [k, _GTM_KIND[k], by[k] || 0])].map(([k, label, n]) => `<button class="chan-chip${_gtmKind === k ? " active" : ""}" data-kind="${k}" role="tab">${label} <span class="n">${n}</span></button>`).join(""));

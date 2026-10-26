@@ -114,40 +114,61 @@ def _channel_row(lead: dict) -> str:
 
 
 def _pipedrive_info(c, lead: dict, cache: dict, need_owner: bool) -> dict:
-    """{person, prior, owner} for the lead's Pipedrive contact. `prior` (in
-    Pipedrive before this application) never changes, so it's cached; `owner`
-    (of a deal made since) is re-read while it's needed and still missing."""
-    from .pipedrive import _same_phone
+    """{person, prior, owner} for the lead's Pipedrive contact, cached per lead.
+    The contact lookup runs once (`prior` — in Pipedrive before this
+    application — never changes). `owner` (of a deal made since) is re-read at
+    most hourly, only while it's needed and still missing, to spare the API."""
     key = f"{lead['email'] or _digits(lead['phone'])}|{lead['date']}"
     hit = cache.get(key)
-    if hit and (not need_owner or hit.get("owner") or not c):
+    if hit and "ids" not in hit and "prior" in hit:     # cached by the first version
+        hit["ids"] = [hit["person"]] if hit.get("person") else []
+    if hit and "ids" in hit:
+        if c and not hit["ids"] and time.time() - hit.get("ids_at", 0) > 3600:
+            hit["ids"] = _find_people(c, lead)         # the contact may have been made since
+            hit["person"] = min(hit["ids"]) if hit["ids"] else None
+            hit["ids_at"] = time.time()
+        if need_owner and c and not hit["owner"] and time.time() - hit.get("owner_at", 0) > 3600:
+            hit["owner"] = _deal_owner(c, hit["ids"], lead["date"])
+            hit["owner_at"] = time.time()
         return hit
-    ids = set()
-    if c:
-        if lead["email"]:
-            for i in (c.get("/persons/search", term=lead["email"], fields="email",
-                            exact_match="true").get("data") or {}).get("items") or []:
-                ids.add(i["item"]["id"])
-        want = _digits(lead["phone"])
-        if len(want) >= 7:
-            for i in (c.get("/persons/search", term=want[-9:], fields="phone").get("data") or {}).get("items") or []:
-                if any(_same_phone(want, _digits(p)) for p in i["item"].get("phones") or []):
-                    ids.add(i["item"]["id"])
-    info = {"person": min(ids) if ids else None, "prior": False, "owner": ""}
+    if not c:                                          # no Pipedrive: nothing to cache
+        return {"person": None, "prior": False, "owner": "", "ids": []}
+    ids = _find_people(c, lead)
     cutoff = (lead["date"] - dt.timedelta(days=1)).isoformat()
-    for pid in sorted(ids):
-        if not hit:
-            p = c.get(f"/persons/{pid}").get("data") or {}
-            if (p.get("add_time") or "9")[:10] < cutoff:
-                info["prior"] = True
-        for d in c.get(f"/persons/{pid}/deals", status="all_not_deleted").get("data") or []:
-            if (d.get("add_time") or "")[:10] >= lead["date"].isoformat() and not info["owner"]:
-                u = d.get("user_id")
-                info["owner"] = (u.get("name") if isinstance(u, dict) else "") or ""
-    if hit:
-        info["prior"], info["person"] = hit["prior"], hit["person"] or info["person"]
+    prior = any((c.get(f"/persons/{pid}").get("data") or {}).get("add_time", "9")[:10] < cutoff
+                for pid in ids)
+    info = {"ids": ids, "person": min(ids) if ids else None, "prior": prior, "ids_at": time.time(),
+            "owner": _deal_owner(c, ids, lead["date"]) if need_owner else "",
+            "owner_at": time.time() if need_owner else 0}
     cache[key] = info
     return info
+
+
+def _find_people(c, lead: dict) -> list[int]:
+    """Pipedrive contacts with the lead's email, or the same phone number."""
+    from .pipedrive import _same_phone
+    ids = set()
+    if lead["email"]:
+        for i in (c.get("/persons/search", term=lead["email"], fields="email",
+                        exact_match="true").get("data") or {}).get("items") or []:
+            ids.add(i["item"]["id"])
+    want = _digits(lead["phone"])
+    if len(want) >= 7:
+        for i in (c.get("/persons/search", term=want[-9:], fields="phone").get("data") or {}).get("items") or []:
+            if any(_same_phone(want, _digits(p)) for p in i["item"].get("phones") or []):
+                ids.add(i["item"]["id"])
+    return sorted(ids)
+
+
+def _deal_owner(c, ids: list[int], since: dt.date) -> str:
+    """Owner of the first deal made for these contacts on/after `since`."""
+    for pid in ids:
+        for d in c.get(f"/persons/{pid}/deals", status="all_not_deleted").get("data") or []:
+            if (d.get("add_time") or "")[:10] >= since.isoformat():
+                u = d.get("user_id")
+                if isinstance(u, dict) and u.get("name"):
+                    return u["name"]
+    return ""
 
 
 def _app_owners() -> tuple[dict, dict]:
@@ -185,28 +206,31 @@ def count_week(start: dt.date, channel_of) -> dict:
     for lead in leads:
         p = _digits(lead["phone"])[-9:]
         in_app = lead["email"] in by_email or (len(p) >= 7 and p in by_phone)
-        info = _pipedrive_info(c, lead, cache, need_owner=not in_app)
-        who = info["person"] or lead["email"] or _digits(lead["phone"])[-9:]
+        info = _pipedrive_info(c, lead, cache, need_owner=False)
+        # Same person = any shared contact, email or phone number.
+        who = {f"pd:{i}" for i in info["ids"]} | {x for x in (lead["email"], p if len(p) >= 7 else "") if x}
         if lead["form"].lower().startswith("re-engagement") or info["prior"]:
             kind = "re-engagement"
-        elif who in seen:
+        elif who & seen:
             kind = "repeat"
+            seen |= who
         else:
             kind = "counted"
-            seen.add(who)
+            seen |= who
         row, ae = _channel_row(lead), ""
         if kind == "counted":
             counts[row] = counts.get(row, 0) + 1
             owner = by_email.get(lead["email"]) or (by_phone.get(p) if len(p) >= 7 else "") or ""
-            if not owner and not in_app:
-                owner = info["owner"]
+            if not owner and not in_app:              # not in LeadSearch: distributed by hand?
+                owner = _pipedrive_info(c, lead, cache, need_owner=True)["owner"]
             first = (owner.split() or [""])[0].lower()
             if first in aes:
                 ae = aes[first]
                 label = config.GTM_SQL_ROW.format(ae=ae)
                 counts[label] = counts.get(label, 0) + 1
         detail.append({**lead, "date": lead["date"].isoformat(), "kind": kind, "row": row, "ae": ae})
-    db.meta_set("gtm_pd_cache", json.dumps(cache))
+    keep = (start - dt.timedelta(days=21)).isoformat()     # forget leads long out of the window
+    db.meta_set("gtm_pd_cache", json.dumps({k: v for k, v in cache.items() if k.rsplit("|", 1)[-1] >= keep}))
     return {"counts": counts, "leads": detail}
 
 

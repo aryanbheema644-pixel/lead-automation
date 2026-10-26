@@ -267,12 +267,19 @@ def _start_scheduler() -> None:
         _scheduler_thread.start()
 
 
+_last_recount = 0.0
+
+
 def _locked_sync(add_new: bool = True) -> dict:
     """Push to the destination (Pipedrive) sheet, then recount this week and
     last week in the GTM report from the source sheet (see gtm.py)."""
+    global _last_recount
     with _sync_lock:
         out = _sync_dest(add_new)
-        if config.GTM_SHEET_ID:
+        # A recount reads the whole lead sheet; several lead edits in a row must
+        # not eat the Google Sheets read quota. The next cycle catches up.
+        if config.GTM_SHEET_ID and time.time() - _last_recount > 120:
+            _last_recount = time.time()
             try:
                 rep = gtm.recount(_channel_from_tab)
                 out["report"] = {"changed": rep["changed"], "skipped": len(rep["skipped"])}
