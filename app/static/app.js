@@ -373,12 +373,32 @@ function _donut(data, colors) { return { type: "doughnut", data: { labels: ["Acc
 // Each chart has its own period (remembered per browser). Rows come per lead:
 // [day, channel, status, tier, owner]; day = the lead's date.
 let _anRows = null;
+// Periods offered on every chart (and in the toolbar, for all charts at once).
+const _RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["3", "Last 3 days"], ["7", "Last 7 days"],
+  ["14", "Last 14 days"], ["30", "Last 30 days"], ["week", "This week"], ["lastweek", "Last week"],
+  ["month", "This month"], ["lastmonth", "Last month"], ["all", "All time"]];
+const _dayAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return _isoDay(d); };
+function _span(r) {                   // [first day, last day] of a period; weeks start on Sunday
+  const now = new Date(), dow = now.getDay();
+  if (r === "today") return [_dayAgo(0), _dayAgo(0)];
+  if (r === "yesterday") return [_dayAgo(1), _dayAgo(1)];
+  if (r === "week") return [_dayAgo(dow), _dayAgo(0)];
+  if (r === "lastweek") return [_dayAgo(dow + 7), _dayAgo(dow + 1)];
+  if (r === "month") return [_isoDay(new Date(now.getFullYear(), now.getMonth(), 1)), _dayAgo(0)];
+  if (r === "lastmonth") return [_isoDay(new Date(now.getFullYear(), now.getMonth() - 1, 1)), _isoDay(new Date(now.getFullYear(), now.getMonth(), 0))];
+  if (r === "all") return [null, _dayAgo(0)];
+  return [_dayAgo(+r - 1), _dayAgo(0)];
+}
 const _range = { channels: "7", outcomes: "7", tiers: "7", owners: "7", time: "7" };
 try { Object.assign(_range, JSON.parse(localStorage.getItem("ls-ranges") || "{}")); } catch {}
+Object.keys(_range).forEach((k) => { if (!_RANGES.some(([v]) => v === _range[k])) _range[k] = "7"; });
 document.querySelectorAll(".range-sel").forEach((s) => {
-  s.value = _range[s.dataset.chart] || s.value;
+  s.innerHTML = _RANGES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  s.value = _range[s.dataset.chart] || "7";
   s.addEventListener("change", () => { _range[s.dataset.chart] = s.value; try { localStorage.setItem("ls-ranges", JSON.stringify(_range)); } catch {} syncRangeAll(); drawAnalytics(); });
 });
+$("#rangeAll").innerHTML = _RANGES.map(([v, l]) => `<option value="${v}">All charts: ${l.toLowerCase()}</option>`).join("")
+  + `<option value="mixed" hidden>Charts: mixed periods</option>`;
 function syncRangeAll() {           // the toolbar picker shows the shared period, if any
   const v = new Set(Object.values(_range)); $("#rangeAll").value = v.size === 1 ? [...v][0] : "mixed";
 }
@@ -390,8 +410,7 @@ $("#rangeAll").addEventListener("change", (e) => {
   try { localStorage.setItem("ls-ranges", JSON.stringify(_range)); } catch {}
   drawAnalytics();
 });
-const _dayAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return _isoDay(d); };
-const _inRange = (chart) => { const r = _range[chart]; if (r === "all") return _anRows; const from = _dayAgo(+r - 1); return _anRows.filter((x) => x[0] >= from); };
+const _inRange = (chart) => { const [from, to] = _span(_range[chart]); return _anRows.filter((x) => (!from || x[0] >= from) && x[0] <= to); };
 const _tally = (rows, i, skip = "") => rows.reduce((m, x) => { if (x[i] && x[i] !== skip) m[x[i]] = (m[x[i]] || 0) + 1; return m; }, {});
 async function loadAnalytics() {
   if (!_ready()) { setTimeout(loadAnalytics, 400); return; }
@@ -407,8 +426,8 @@ function drawAnalytics() {
   _draw("chOwners", barOf(_tally(_inRange("owners").filter((x) => x[2] === "accepted"), 4)));
   // Leads over time: every day in the period, zero days included.
   const tr = _inRange("time"), perDay = _tally(tr, 0);
-  const first = _range.time === "all" ? (Object.keys(perDay).sort()[0] || _dayAgo(0)) : _dayAgo(+_range.time - 1);
-  const labels = []; for (let d = new Date(first + "T00:00"); _isoDay(d) <= _dayAgo(0); d.setDate(d.getDate() + 1)) labels.push(_isoDay(d));
+  const [from, to] = _span(_range.time), first = from || Object.keys(perDay).sort()[0] || to;
+  const labels = []; for (let d = new Date(first + "T00:00"); _isoDay(d) <= to; d.setDate(d.getDate() + 1)) labels.push(_isoDay(d));
   _draw("chTime", _line(labels.map((d) => d.slice(5)), labels.map((d) => perDay[d] || 0)));
   const a = { statuses: _tally(_inRange("outcomes"), 2) };
   // Outcomes donut + legend
