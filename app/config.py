@@ -111,10 +111,10 @@ AE_DIRECTORY = _get_directory(
     "Rahul:32114362:Rahul Bamal,Rocio:32884736:Rocio Hernandez",
 )
 
-# Weekly GTM report: each ACCEPTED lead pulled from the source sheet adds +1 to
-# its channel row and its AE's SQL row, in the column of the week it came in.
+# Weekly GTM report: this week's and last week's channel and AE SQL cells are
+# recounted from the source sheet (see gtm.py) and overwritten.
 # Blank GTM_SHEET_ID disables it. Rows are found by their label in column B.
-GTM_SHEET_ID = _get("GTM_SHEET_ID", "10Lny-WiFbptDapxNwEEXj-PDEIaEz_uM_A81kfm01PA")  # copy, for testing
+GTM_SHEET_ID = _get("GTM_SHEET_ID", "1TFVwQyFcHojXOZQ4K0DYP_1z2KxyqHbIKmaK6Li68vo")  # GTM_Funnels (original)
 GTM_TAB = _get("GTM_TAB", "MQL Tracker")
 GTM_CHANNEL_ROWS = {"Meta": "Inbound - Meta", "WhatsApp": "Inbound - Website (Whatsapp)",
                     "Website": "Inbound - Website (SEO + AEO)"}
