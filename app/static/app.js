@@ -79,7 +79,7 @@ $("#pushBtn").addEventListener("click", async () => {
   try {
     const d = await readResponse(await fetch("/api/sheets/push", { method: "POST" }));
     m.className = "msg ok"; const parts = []; if (d.added) parts.push(`added ${d.added}`); if (d.updated) parts.push(`updated ${d.updated}`);
-    m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "") + (d.report && d.report.changed ? ` GTM report: ${d.report.changed} cell(s) recounted.` : "") + (d.report_issue ? ` GTM report issue: ${d.report_issue}` : "");
+    m.textContent = (parts.length ? `Sheet synced — ${parts.join(", ")}` : "Sheet already up to date") + ` · ${d.unchanged || 0} unchanged` + (d.in_review ? ` · ${d.in_review} in review not pushed (accept or reject them first)` : "") + "." + ((d.incomplete || []).length ? ` Held back, incomplete: ${d.incomplete.join("; ")}.` : "") + (d.report && d.report.changed ? ` GTM report: ${d.report.changed} cell(s) recounted.` : "") + (d.marked_in_progress ? ` ${d.marked_in_progress} lead(s) marked In Progress in the lead sheet.` : "") + (d.source_issue ? ` ${d.source_issue}` : "") + (d.report_issue ? ` GTM report issue: ${d.report_issue}` : "");
   } catch (e) { m.className = "msg err"; m.textContent = e.message; }
 });
 $("#baselineBtn").addEventListener("click", async () => { if (!confirm("Mark ALL current source rows as seen (skip them)?")) return; const m = $("#uploadMsg"); m.className = "msg"; m.textContent = "Baselining…"; try { const d = await readResponse(await fetch("/api/sheets/baseline", { method: "POST" })); m.className = "msg ok"; m.textContent = `Baselined ${d.baselined} rows.`; } catch (e) { m.className = "msg err"; m.textContent = e.message; } });
@@ -312,6 +312,7 @@ function _lastRunText(l) {
   else if (l.added == null) p.push("not pushed (push paused)");
   if (l.in_review) p.push(`${l.in_review} awaiting review`);
   if (l.report && l.report.changed) p.push(`GTM report: ${l.report.changed} cell(s) recounted`);
+  if (l.marked_in_progress) p.push(`${l.marked_in_progress} marked In Progress`);
   if (l.report_issue) p.push(`GTM report issue: ${l.report_issue}`);
   if (l.incomplete) p.push(`${l.incomplete} incomplete held back`);
   return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (resumed)" : ""}: ${p.join(" · ") || "nothing new"}`;

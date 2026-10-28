@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, dedupe, gtm, pipedrive, sheets
+from . import config, db, dedupe, gtm, pipedrive, sheets, source_status
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -214,7 +214,7 @@ def _run_cycle(trigger: str) -> dict:
                 pushed = _locked_sync(add_new=not _push_paused())
                 result.update(added=pushed["added"], updated=pushed["updated"],
                               in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
-                for k in ("report", "report_issue"):
+                for k in ("report", "report_issue", "marked_in_progress", "source_issue"):
                     if k in pushed:
                         result[k] = pushed[k]
         except Exception as e:  # noqa: BLE001 — never let the loop die; show it instead
@@ -271,11 +271,19 @@ _last_recount = 0.0
 
 
 def _locked_sync(add_new: bool = True) -> dict:
-    """Push to the destination (Pipedrive) sheet, then recount this week and
-    last week in the GTM report from the source sheet (see gtm.py)."""
+    """Push to the destination (Pipedrive) sheet, mark the distributed leads
+    "In Progress" in the source sheet (see source_status.py), then recount this
+    week and last week in the GTM report (see gtm.py)."""
     global _last_recount
     with _sync_lock:
         out = _sync_dest(add_new)
+        # Distributed leads get "In Progress" on their row in the source sheet.
+        try:
+            marked = source_status.mark_distributed(_channel_from_tab)["marked"]
+            if marked:
+                out["marked_in_progress"] = marked
+        except Exception as e:  # noqa: BLE001 — must not fail the push
+            out["source_issue"] = f"Lead sheet not marked: {str(e)[:200]}"
         # A recount reads the whole lead sheet; several lead edits in a row must
         # not eat the Google Sheets read quota. The next cycle catches up.
         if config.GTM_SHEET_ID and time.time() - _last_recount > 120:

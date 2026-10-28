@@ -45,6 +45,8 @@ def _parse_date(text: str) -> dt.date | None:
     t = (text or "").strip()
     if not t:
         return None
+    if re.fullmatch(r"4\d{4}(\.\d+)?", t):                 # a Sheets serial date, e.g. 46323
+        return dt.date(1899, 12, 30) + dt.timedelta(days=int(float(t)))
     t = t.split("T")[0].split(" ")[0] if re.match(r"\d{4}-\d{2}-\d{2}", t) else t
     for fmt in _DATE_FORMATS:
         try:
