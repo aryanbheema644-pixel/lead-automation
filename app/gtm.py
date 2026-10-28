@@ -9,6 +9,7 @@ source sheet (Website / Meta / WhatsApp tabs) and overwrites those weeks' cells:
       * someone already in Pipedrive (contact made a day or more before this
         application) — they applied again.
     The same person applying twice in a week counts once (first application).
+    Junk (test entries, keyboard-mash or bot names — see `_is_junk`) never counts.
     Meta tab -> Inbound - Meta, WhatsApp tab -> Inbound - Website (Whatsapp),
     Website tab -> by "Where have you heard about us" (GTM_WEBSITE_HEARD_ROWS),
     anything unidentified -> Inbound - Website (SEO + AEO).
@@ -36,6 +37,7 @@ _DATE_FORMATS = ("%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%m/%d/%y", "%d
 _WEBSITE_ROW = "Inbound - Website (SEO + AEO)"
 _TAB_ROWS = {"Meta": "Inbound - Meta", "WhatsApp": "Inbound - Website (Whatsapp)"}
 _INTERNAL = ("beyondborder.co.uk", "beyondborderglobal.com")     # our own test entries
+_TEST_DOMAINS = ("example.com", "example.org", "example.net", "test.com")
 # Same person on two tabs the same day: the first application wins. The WhatsApp
 # chatbot follows up Meta ad leads, so Meta goes before WhatsApp.
 _TAB_ORDER = {"Website": 0, "Meta": 1, "WhatsApp": 2}
@@ -106,6 +108,24 @@ def _source_leads(channel_of, start: dt.date, end: dt.date) -> list[dict]:
                         "form": col(r, "form type"), "heard": col(r, "where have you heard about us")})
     out.sort(key=lambda x: (x["date"], x["order"], x["row"]))
     return out
+
+
+def _is_junk(lead: dict) -> bool:
+    """Test entries ("Test Person", test@example.com) and made-up names: a
+    keyboard mash (kjhdsasdsdf, hardly any vowels) or bot names in random case
+    (QBQWWWhdLKEoBnBnWpi)."""
+    email, name = lead["email"], lead["name"]
+    if email.split("@")[-1] in _TEST_DOMAINS or re.fullmatch(r"test\d*@.*", email):
+        return True
+    if re.search(r"\btest\b", name.lower()):
+        return True
+    if "@" in name:                                    # an email typed in the name box
+        return False
+    for tok in re.findall(r"[A-Za-z]{8,}", name):
+        if sum(ch in "aeiouyAEIOUY" for ch in tok) / len(tok) < 0.2 or \
+                len(re.findall(r"[a-z][A-Z]", tok)) >= 3:
+            return True
+    return False
 
 
 def _channel_row(lead: dict) -> str:
@@ -208,10 +228,13 @@ def count_week(start: dt.date, channel_of) -> dict:
     for lead in leads:
         p = _digits(lead["phone"])[-9:]
         in_app = lead["email"] in by_email or (len(p) >= 7 and p in by_phone)
-        info = _pipedrive_info(c, lead, cache, need_owner=False)
+        junk = _is_junk(lead)
+        info = {"ids": [], "prior": False} if junk else _pipedrive_info(c, lead, cache, need_owner=False)
         # Same person = any shared contact, email or phone number.
         who = {f"pd:{i}" for i in info["ids"]} | {x for x in (lead["email"], p if len(p) >= 7 else "") if x}
-        if lead["form"].lower().startswith("re-engagement") or info["prior"]:
+        if junk:
+            kind = "junk"
+        elif lead["form"].lower().startswith("re-engagement") or info["prior"]:
             kind = "re-engagement"
         elif who & seen:
             kind = "repeat"

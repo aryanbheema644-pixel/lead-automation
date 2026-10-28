@@ -658,7 +658,7 @@ pdLoadWritten();
 
 // ── GTM report: last recount, week by week, lead by lead ───────────────────
 let _gtm = null, _gtmWeek = "", _gtmKind = "all";
-const _GTM_KIND = { counted: "Counted", "re-engagement": "Re-engagement (not counted)", repeat: "Same person again (not counted)" };
+const _GTM_KIND = { counted: "Counted", "re-engagement": "Re-engagement (not counted)", repeat: "Same person again (not counted)", junk: "Test / junk (not counted)" };
 const _CHAN_TAB = { Meta: "Meta form", WhatsApp: "WhatsApp chatbot", Website: "Website form" };
 function gtmRender() {
   const d = _gtm; if (!d || !d.weeks) { setHTML($("#gtmRows"), `<tr><td colspan="5" class="empty">No recount yet. Click “Recount now”.</td></tr>`); return; }
