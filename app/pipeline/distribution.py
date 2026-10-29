@@ -1,14 +1,21 @@
 """AE lead distribution (the Owner column).
 
 Rules (priority order):
-  1. LATAM lead (by country)      -> round-robin AE_LATAM  (Agustina/Rocio)
-  2. Pilot by profession          -> AE_PILOT              (Rahul)
-  3. Everyone else                -> round-robin AE_ROUND_ROBIN
+  1. LATAM lead (by country)      -> AE_LATAM  (Agustina/Rocio)
+  2. Pilot by profession          -> AE_PILOT  (Rahul)
+  3. Everyone else                -> AE_ROUND_ROBIN
 LATAM wins over pilot when both apply.
+
+All three share ONE cycle: every lead an AE gets uses up their turn, so a
+LATAM lead to Agustina means the next normal lead skips her. Each lead goes to
+the allowed AE who has had the fewest turns (ties in rotation order), so totals
+stay level however many leads are LATAM.
 """
 from __future__ import annotations
 
+import json
 import re
+import threading
 
 from .. import config, db
 
@@ -89,6 +96,53 @@ def set_on_leave(name: str, leave: bool) -> list[str]:
     return sorted(off)
 
 
+_turns_lock = threading.Lock()
+
+
+def _take_turn(allowed: list[str]) -> str:
+    """The AE in `allowed` with the fewest turns this cycle (ties: the next one
+    in rotation order after the last pick); records the turn. Turns are kept
+    relative to the AEs on duty: the lowest is 0, and an AE coming back from
+    leave starts level with the others rather than owed a pile of leads."""
+    order = list(dict.fromkeys(config.AE_ROUND_ROBIN + config.AE_LATAM + [config.AE_PILOT]))
+    on_duty = [n for n in order if n and n.lower() not in on_leave()]
+    with _turns_lock:
+        try:
+            state = json.loads(db.meta_get("ae_turns", "{}") or "{}")
+        except ValueError:
+            state = {}
+        turns = {n: state.get("turns", {}).get(n, 0) for n in on_duty}
+        floor = min(turns.values(), default=0)
+        turns = {n: (t if n in state.get("turns", {}) else floor) for n, t in turns.items()}
+        last = state.get("last", "")
+        start = order.index(last) + 1 if last in order else 0
+        ranked = order[start:] + order[:start]
+        pick = min((n for n in ranked if n in allowed),
+                   key=lambda n: turns.get(n, floor), default="")
+        if pick:
+            turns[pick] = turns.get(pick, floor) + 1
+            low = min(turns.values())
+            db.meta_set("ae_turns", json.dumps({"turns": {n: t - low for n, t in turns.items()},
+                                                "last": pick}))
+        return pick
+
+
+def move_turn(old: str, new: str) -> None:
+    """A lead was reassigned by hand: the turn goes with it."""
+    with _turns_lock:
+        try:
+            state = json.loads(db.meta_get("ae_turns", "{}") or "{}")
+        except ValueError:
+            return
+        t = state.get("turns", {})
+        if old in t and new in t:
+            t[old] -= 1
+            t[new] += 1
+            low = min(t.values())
+            state["turns"] = {n: v - low for n, v in t.items()}
+            db.meta_set("ae_turns", json.dumps(state))
+
+
 def assign_owner(lead: dict) -> str:
     """Pick the AE for a lead per the distribution rules (advances round-robin).
     AEs on leave are skipped: LATAM goes to whichever LATAM AE is on duty (else
@@ -98,10 +152,7 @@ def assign_owner(lead: dict) -> str:
     working = lambda names: [n for n in names if n and n.lower() not in off]
     latam = working(config.AE_LATAM)
     if is_latam(lead) and latam:
-        return latam[db.next_rr("latam", len(latam))]
+        return _take_turn(latam)
     if is_pilot(lead) and config.AE_PILOT and config.AE_PILOT.lower() not in off:
-        return config.AE_PILOT
-    pool = working(config.AE_ROUND_ROBIN)
-    if not pool:
-        return ""
-    return pool[db.next_rr("normal", len(pool))]
+        return _take_turn([config.AE_PILOT])
+    return _take_turn(working(config.AE_ROUND_ROBIN))

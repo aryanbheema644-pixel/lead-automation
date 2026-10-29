@@ -1486,7 +1486,7 @@ def ae_availability(body: dict) -> JSONResponse:
 def change_owner(lead_id: int, body: dict) -> JSONResponse:
     """Reassign a lead's AE. Flows everywhere: the Pipedrive sheet's Owner (AE)
     Id + Owner Name cells are edited in place, and the GTM report moves the SQL
-    count (-1 old AE, +1 new). Doesn't touch the round-robin."""
+    count (-1 old AE, +1 new). The turn in the AE cycle moves with the lead."""
     lead = db.get_lead(lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
@@ -1503,6 +1503,7 @@ def change_owner(lead_id: int, body: dict) -> JSONResponse:
     if match[0] == lead.get("owner"):
         return JSONResponse({"ok": True, "owner": match[0], "synced": False})
     db.update_lead(lead_id, owner=match[0])
+    distribution.move_turn(lead.get("owner") or "", match[0])
     synced = _sync_soon() if lead.get("pushed") else False
     return JSONResponse({"ok": True, "owner": match[0], "synced": synced,
                          "pending_push": bool(lead.get("pushed")) and not synced})
