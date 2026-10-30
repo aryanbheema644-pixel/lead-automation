@@ -9,6 +9,11 @@ Priority order:
      search but not content-confirmed          verifies) rather than silently
                                                accepting a weaker source.
   4. No usable LinkedIn                     -> fall back to the best source.
+
+Only a page that was actually opened can be ACCEPTED: a LinkedIn profile its
+data was scraped for (Apify), any other page whose content was fetched. A
+candidate judged from a search snippet alone (the link may be dead) goes to
+review at most.
 """
 from __future__ import annotations
 
@@ -24,6 +29,16 @@ def _sc(c: dict) -> float:
         return 0.0
 
 
+def _opened(c: dict) -> bool:
+    src = c.get("content_source")
+    if c.get("source_type") == "linkedin":
+        return src in ("apify", "apify_search")
+    return src in ("apify", "apify_search", "tavily", "firecrawl")
+
+
+_UNOPENED = "The page couldn't be opened, so this needs checking. "
+
+
 def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
     # Not finding someone online isn't a reason to drop the lead — sparse leads
     # (just a name, email and phone) often have no findable profile. Those go to
@@ -36,13 +51,14 @@ def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
     best_li = max(lis, key=_sc) if lis else None
     best_any = max(candidates, key=_sc)
 
-    # 1) Confident LinkedIn wins outright.
-    if best_li and _sc(best_li) >= config.ACCEPT_THRESHOLD:
+    # 1) Confident LinkedIn wins outright — if its profile could be opened.
+    if best_li and _sc(best_li) >= config.ACCEPT_THRESHOLD and _opened(best_li):
         return "accepted", _sc(best_li), best_li.get("reasoning", ""), best_li
 
-    # 2) Moderately-confident LinkedIn -> review, with it as the profile.
+    # 2) Moderately-confident (or unopened) LinkedIn -> review, with it as the profile.
     if best_li and _sc(best_li) >= config.REVIEW_THRESHOLD:
-        return "review", _sc(best_li), best_li.get("reasoning", ""), best_li
+        note = "" if _opened(best_li) else _UNOPENED
+        return "review", _sc(best_li), note + best_li.get("reasoning", ""), best_li
 
     # 3) A LinkedIn was discovered via targeted (name-matched) search but not
     #    content-confirmed -> send to review with the LinkedIn to verify, instead
@@ -64,10 +80,11 @@ def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
         )
 
     # 4) No usable LinkedIn -> fall back to the best source by threshold.
-    if _sc(best_any) >= config.ACCEPT_THRESHOLD:
+    if _sc(best_any) >= config.ACCEPT_THRESHOLD and _opened(best_any):
         return "accepted", _sc(best_any), best_any.get("reasoning", ""), best_any
     if _sc(best_any) >= config.REVIEW_THRESHOLD:
-        return "review", _sc(best_any), best_any.get("reasoning", ""), best_any
+        note = "" if _opened(best_any) else _UNOPENED
+        return "review", _sc(best_any), note + best_any.get("reasoning", ""), best_any
     return ("review", _sc(best_any),
             "No confident match online (best was %.2f) — check the candidates, or accept "
             "as-is / reject. %s" % (_sc(best_any), best_any.get("reasoning", "") or ""), None)

@@ -15,7 +15,7 @@ from . import distribution, llm, screening
 from .classify import classify
 from .decision import decide
 from .fetch import acquire_content
-from .linkedin import fetch_linkedin_raw, search_by_name
+from .linkedin import _format_profile, fetch_linkedin_raw, search_by_name
 from .profile_view import to_pdf_view
 from .search import linkedin_search, search_many
 from .urls import canonical_url
@@ -136,14 +136,29 @@ _worker_lock = threading.Lock()
 _worker_running = False
 
 
+# Leads being re-checked keep their status (they're already distributed).
+_rechecking: set[int] = set()
+
+
 def _set_stage(lead_id: int, stage: str) -> None:
-    db.update_lead(lead_id, stage=stage, status="processing")
+    if lead_id in _rechecking:
+        db.update_lead(lead_id, stage=stage)
+    else:
+        db.update_lead(lead_id, stage=stage, status="processing")
 
 
-def process_lead(lead_id: int) -> None:
+def process_lead(lead_id: int, recheck: bool = False) -> None:
+    """Find and screen the lead's profile, decide, assign the AE.
+
+    recheck=True: the lead is already accepted and distributed — search again
+    for its profile but keep its status and AE. The profile is replaced only by
+    one that's verified (accepted); otherwise it's cleared, so a bad link
+    doesn't stay in the Pipedrive sheet."""
     lead = db.get_lead(lead_id)
     if not lead:
         return
+    if recheck:
+        _rechecking.add(lead_id)
     try:
         # Fast path: the lead typed in their own LinkedIn URL. Leads mistype
         # these (or make one up), so it's only used as-is when the profile
@@ -164,7 +179,7 @@ def process_lead(lead_id: int) -> None:
         if provided_raw and not provided_note:
             chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
             screen_summary = _screen_lead(lead_id, chosen, raw=provided_raw)
-            owner = distribution.assign_owner({
+            owner = lead.get("owner") if recheck else distribution.assign_owner({
                 "phone": lead.get("phone"), "message": lead.get("message"),
                 "visa": lead.get("visa"), "extracted": {}, "chosen": chosen})
             candidates = [{"url": provided, "source_type": "linkedin (provided)",
@@ -177,7 +192,8 @@ def process_lead(lead_id: int) -> None:
                 reasoning="LinkedIn URL provided by the lead — checked: the profile exists and has the lead's name.",
                 error=None,
             )
-            dedupe.check_processed(lead_id)
+            if not recheck:
+                dedupe.check_processed(lead_id)
             return
 
         # Step 2 — extract & normalize
@@ -241,7 +257,8 @@ def process_lead(lead_id: int) -> None:
         if provided_raw:                               # typed in, but another name: let the matcher judge
             seen.add(provided.rstrip("/").lower())
             li_ordered.append({"url": provided, "title": "LinkedIn URL typed in by the lead",
-                               "snippet": "", "raw_content": ""})
+                               "snippet": "", "raw_content": _format_profile(provided_raw),
+                               "_source": "apify_search"})     # already scraped: reuse it
         elif provided:                                 # typed in, but no such profile
             seen.add(provided.rstrip("/").lower())
         for r in lane_li + gen_li:
@@ -319,7 +336,16 @@ def process_lead(lead_id: int) -> None:
         # accepted leads, so rejected/review ones don't consume a round-robin turn
         # (review leads get their AE when a reviewer accepts them).
         owner = None
-        if status == "accepted":
+        if recheck:
+            # Already distributed: keep it accepted with its AE; keep a profile
+            # only if it's verified, else clear it rather than keep a bad link.
+            if status != "accepted":
+                if chosen:
+                    reasoning = (f"Re-checked: the best profile found ({chosen.get('url')}) couldn't be "
+                                 "confirmed, so no profile is set — check it on the lead. " + (reasoning or ""))
+                chosen, screen_summary = None, None
+            status, owner = "accepted", lead.get("owner")
+        elif status == "accepted":
             owner = distribution.assign_owner({
                 "phone": lead.get("phone"), "message": lead.get("message"),
                 "visa": lead.get("visa"), "extracted": extracted, "chosen": chosen or {}})
@@ -337,9 +363,15 @@ def process_lead(lead_id: int) -> None:
             owner=owner,
             error=None,
         )
-        dedupe.check_processed(lead_id)   # same LinkedIn as an earlier lead -> merge
+        if not recheck:
+            dedupe.check_processed(lead_id)   # same LinkedIn as an earlier lead -> merge
     except Exception as e:  # noqa: BLE001 — surface any failure on the lead itself
-        db.update_lead(lead_id, status="error", stage="failed", error=str(e))
+        if recheck:                            # leave a distributed lead as it was
+            db.update_lead(lead_id, stage="done", error=f"re-check failed: {e}")
+        else:
+            db.update_lead(lead_id, status="error", stage="failed", error=str(e))
+    finally:
+        _rechecking.discard(lead_id)
 
 
 def _drain_queue() -> None:

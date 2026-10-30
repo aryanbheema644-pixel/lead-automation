@@ -43,7 +43,8 @@ def firecrawl_scrape(url: str) -> str:
 def acquire_content(candidate: dict) -> tuple[str, str]:
     """Return (content, source_of_content) for a classified candidate.
 
-    source_of_content is one of: 'apify', 'tavily', 'firecrawl', 'none'.
+    source_of_content is one of: 'apify', 'apify_search', 'tavily', 'firecrawl'
+    (the page was opened), 'snippet' (only the search result's snippet) or 'none'.
     """
     url = candidate["url"]
     kind = candidate["source_type"]
@@ -77,4 +78,5 @@ def acquire_content(candidate: dict) -> tuple[str, str]:
     fc = firecrawl_scrape(url)
     if fc:
         return fc, "firecrawl"
-    return candidate.get("snippet", ""), "tavily" if candidate.get("snippet") else "none"
+    # The page itself couldn't be opened: only the search engine's snippet.
+    return candidate.get("snippet", ""), "snippet" if candidate.get("snippet") else "none"

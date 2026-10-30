@@ -1464,6 +1464,24 @@ def _sync_soon() -> bool:
 orchestrator.on_lead_changed = lambda _lead_id: _sync_soon()   # e.g. a re-screen finished
 
 
+@app.post("/api/leads/recheck")
+def recheck(body: dict) -> JSONResponse:
+    """Search again for the profile of accepted leads (e.g. a bad typed-in
+    LinkedIn), keeping their status and AE; the Pipedrive sheet follows."""
+    ids = [int(i) for i in body.get("ids") or []]
+    leads = [db.get_lead(i) for i in ids]
+    bad = [i for i, l in zip(ids, leads) if not l or l.get("status") != "accepted"]
+    if bad:
+        raise HTTPException(400, f"Not accepted leads: {bad}")
+
+    def run():
+        for i in ids:
+            orchestrator.process_lead(i, recheck=True)
+        _sync_soon()
+    threading.Thread(target=run, daemon=True).start()
+    return JSONResponse({"ok": True, "started": ids})
+
+
 def _safe(fn) -> None:
     try:
         fn()
