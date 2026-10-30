@@ -6,7 +6,9 @@ Flow (matches the diagram):
 """
 from __future__ import annotations
 
+import re
 import threading
+import unicodedata
 
 from .. import config, db, dedupe
 from . import distribution, llm, screening
@@ -42,11 +44,12 @@ def is_linkedin(url: str) -> bool:
     return "linkedin.com" in (url or "").lower()
 
 
-def _screen_lead(lead_id: int, chosen: dict, track: bool = True) -> dict | None:
+def _screen_lead(lead_id: int, chosen: dict, track: bool = True, raw: dict | None = None) -> dict | None:
     """Scrape the chosen LinkedIn profile and run it through the screening console.
     Returns a flat screening summary (or a note dict) and enriches `chosen.person`.
     Returns None if there's no LinkedIn URL to screen. With track=False the
-    lead's status/stage are left alone (used for re-screens of finished leads)."""
+    lead's status/stage are left alone (used for re-screens of finished leads).
+    `raw`: the profile, if it was already scraped."""
     url = _canon((chosen or {}).get("url", ""))
     if not is_linkedin(url):
         return None
@@ -54,7 +57,7 @@ def _screen_lead(lead_id: int, chosen: dict, track: bool = True) -> dict | None:
         return {"note": "screening not configured"}
     if track:
         _set_stage(lead_id, "scraping profile")
-    raw = fetch_linkedin_raw(url)
+    raw = raw or fetch_linkedin_raw(url)
     if not raw:
         return {"note": "LinkedIn profile could not be scraped (empty); not screened."}
     profile = to_pdf_view(raw)
@@ -66,6 +69,19 @@ def _screen_lead(lead_id: int, chosen: dict, track: bool = True) -> dict | None:
     except screening.ScreeningError as e:
         return {"error": f"screening failed: {e}"}
     return screening.summarize(result)
+
+
+def _name_tokens(s: str) -> set[str]:
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    return {t for t in re.findall(r"[a-z]+", s) if len(t) >= 3}
+
+
+def _same_name(lead_name: str, raw: dict) -> bool:
+    """The scraped profile carries the lead's name (any name part; "Alex" counts
+    for "Alexei"). Used to check a LinkedIn URL the lead typed in themselves."""
+    mine = _name_tokens(lead_name)
+    theirs = _name_tokens(f"{raw.get('firstName', '')} {raw.get('lastName', '')}")
+    return any(a.startswith(b) or b.startswith(a) for a in mine for b in theirs)
 
 
 def _cache_on_candidate(candidates: list[dict], chosen: dict, summary: dict | None) -> None:
@@ -129,12 +145,25 @@ def process_lead(lead_id: int) -> None:
     if not lead:
         return
     try:
-        # Fast path: the lead already provided a LinkedIn URL -> no refinement
-        # (no search/discovery). Go straight to screening on that URL.
+        # Fast path: the lead typed in their own LinkedIn URL. Leads mistype
+        # these (or make one up), so it's only used as-is when the profile
+        # exists AND carries the lead's name; otherwise the lead is searched for
+        # like any other, the typed profile (if it exists) being one candidate.
         provided = _canon((lead.get("linkedin") or "").strip())
+        provided_raw, provided_note = None, ""
         if provided.startswith("http") and is_linkedin(provided):
+            _set_stage(lead_id, "checking LinkedIn")
+            provided_raw = fetch_linkedin_raw(provided)
+            if not provided_raw:
+                provided_note = (f"The LinkedIn URL the lead typed in ({provided}) doesn't "
+                                 "lead to a profile, so the lead was searched for. ")
+            elif not _same_name(lead.get("name", ""), provided_raw):
+                who = f"{provided_raw.get('firstName', '')} {provided_raw.get('lastName', '')}".strip()
+                provided_note = (f"The LinkedIn URL the lead typed in ({provided}) belongs to "
+                                 f"{who or 'someone else'}, so the lead was searched for. ")
+        if provided_raw and not provided_note:
             chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
-            screen_summary = _screen_lead(lead_id, chosen)
+            screen_summary = _screen_lead(lead_id, chosen, raw=provided_raw)
             owner = distribution.assign_owner({
                 "phone": lead.get("phone"), "message": lead.get("message"),
                 "visa": lead.get("visa"), "extracted": {}, "chosen": chosen})
@@ -145,7 +174,7 @@ def process_lead(lead_id: int) -> None:
                 lead_id, status="accepted", stage="done", confidence=None,
                 candidates=candidates,
                 chosen=chosen, screening=screen_summary, screened=1, owner=owner,
-                reasoning="LinkedIn URL provided by the lead — no refinement needed.",
+                reasoning="LinkedIn URL provided by the lead — checked: the profile exists and has the lead's name.",
                 error=None,
             )
             dedupe.check_processed(lead_id)
@@ -153,7 +182,10 @@ def process_lead(lead_id: int) -> None:
 
         # Step 2 — extract & normalize
         _set_stage(lead_id, "extracting")
-        extracted = llm.extract_fields(lead)
+        hint = re.sub(r"[-_\d]+", " ", provided.rstrip("/").rsplit("/", 1)[-1]).strip() if provided_note else ""
+        extracted = llm.extract_fields({**lead, "message": (
+            f"{lead.get('message') or ''}\n(The LinkedIn URL they typed in, which was wrong, "
+            f"ends in '{hint}' — possibly their full name.)" if len(hint) > 3 else lead.get("message"))})
         db.update_lead(lead_id, extracted=extracted)
 
         # Step 3 — generate queries
@@ -206,6 +238,12 @@ def process_lead(lead_id: int) -> None:
         # Merge with dedup, preserving priority order:
         # Apify search (reliable, has data) > Tavily-found LinkedIn.
         seen, li_ordered = set(), []
+        if provided_raw:                               # typed in, but another name: let the matcher judge
+            seen.add(provided.rstrip("/").lower())
+            li_ordered.append({"url": provided, "title": "LinkedIn URL typed in by the lead",
+                               "snippet": "", "raw_content": ""})
+        elif provided:                                 # typed in, but no such profile
+            seen.add(provided.rstrip("/").lower())
         for r in lane_li + gen_li:
             key = _canon(r["url"]).rstrip("/").lower()
             if key not in seen:
@@ -257,6 +295,7 @@ def process_lead(lead_id: int) -> None:
 
         # Step 8 — decide (LinkedIn-priority logic; returns the chosen profile)
         status, confidence, reasoning, chosen = decide(candidates)
+        reasoning = provided_note + (reasoning or "")
 
         # The lead gave us their own link but nothing verified well enough: put
         # that link up for review as the profile to check.
