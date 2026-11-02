@@ -327,3 +327,43 @@ def match_candidate(extracted: dict, candidate: dict, content: str,
     except (TypeError, ValueError):
         out["score"] = 0.0
     return out
+
+
+# ── LinkedIn review: is the linked profile the lead? ─────────────────────────
+SAME_PERSON_SYS = MATCH_SYS.replace(" Respond ONLY with a JSON object.", "") + (
+    " Here the lead is a row of a CRM sheet and the page is the LinkedIn profile "
+    "linked on that row; decide whether it is the lead's own profile. Lead names "
+    "are messy: nicknames and short forms (Alex / Alexei), missing or extra middle "
+    "names, swapped surname order, accents, transliteration from another script, "
+    "Spanish double surnames, typos, only a first name, or an email typed into the "
+    "name field. The email's local part often holds the real name, and the phone's "
+    "country code and the lead's message (job, company, field, visa) are further "
+    "corroborators. A lead row rarely names a school or employer, so do not demand "
+    "one: a clearly matching full name with nothing that conflicts is the same "
+    "person. Say false only when the names are clearly different people or a "
+    "corroborator actively conflicts; say \"unsure\" when you genuinely can't tell. "
+    "Respond ONLY with a JSON object."
+)
+
+
+def same_person(lead: dict, profile: str) -> dict:
+    """Judge whether an opened LinkedIn profile belongs to a sheet lead.
+    Returns {"same_person": True|False|"unsure", "confidence": 0..1, "reason": str}."""
+    user = (
+        f"LEAD (sheet row):\n{json.dumps(lead, ensure_ascii=False)}\n\n"
+        f"LINKEDIN PROFILE (opened):\n{(profile or '')[:6000]}\n\n"
+        'Return JSON with exactly these keys: {"same_person": true | false | "unsure", '
+        '"confidence": float, "reason": "one line"}.'
+    )
+    out = chat_json(SAME_PERSON_SYS, user, max_tokens=300)
+    if not isinstance(out, dict):
+        out = {}
+    sp = out.get("same_person")
+    if isinstance(sp, str):
+        sp = {"true": True, "false": False}.get(sp.strip().lower(), "unsure")
+    try:
+        conf = max(0.0, min(1.0, float(out.get("confidence", 0))))
+    except (TypeError, ValueError):
+        conf = 0.0
+    return {"same_person": sp if sp in (True, False) else "unsure",
+            "confidence": conf, "reason": str(out.get("reason") or "")[:300]}

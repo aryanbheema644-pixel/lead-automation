@@ -21,7 +21,7 @@ $("#themeToggle").addEventListener("click", () => {
 });
 
 // ── Router ──────────────────────────────────────────────────────────────────
-const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", gtm: "GTM report", written: "Written on Pipedrive" };
+const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", licheck: "LinkedIn check", gtm: "GTM report", written: "Written on Pipedrive" };
 // "#leads/rejected" opens the Leads page filtered to that status (dashboard tiles link here).
 let _statusFilter = "all";
 function setPage(hash) {
@@ -705,3 +705,32 @@ $("#gtmRecount").addEventListener("click", async () => {
   finally { b.disabled = false; }
 });
 gtmLoad();
+
+// ── LinkedIn check ──────────────────────────────────────────────────────────
+const _LI_WHY = { dead: "Page doesn't open", other_person: "Someone else's profile", unsure: "Maybe not the same person" };
+const _liLink = (u) => u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\/(www\.)?linkedin\.com/, ""))}</a>` : `<span class="subtle">cleared</span>`;
+let _liTimer = null;
+function liRender(d) {
+  const m = $("#liMsg"), b = $("#liRun"); b.disabled = !!d.running;
+  const when = (t) => new Date(t * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  if (d.running) { m.className = "msg"; m.textContent = "Opening the links… this takes a few minutes."; }
+  else if (d.error) { m.className = "msg err"; m.textContent = d.error; }
+  else if (d.finished) { m.className = "msg"; m.textContent = `Last check ${when(d.finished)}${d.only_new ? " (new rows after a Push)" : " (all rows)"}.`; }
+  else { m.className = "msg"; m.textContent = ""; }
+  const changed = d.changed || [], left = d.left || [];
+  if (!d.finished && !d.running) return;
+  const cell = (k, v, cls = "") => `<div class="gtm-cell ${cls}"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
+  setHTML($("#liNumbers"), cell("Links checked", d.checked || 0, "total") + cell("Good", d.good || 0) + cell("Fixed", changed.filter((c) => c.new).length) + cell("Cleared", changed.filter((c) => !c.new).length) + cell("Left for a person", left.length));
+  const row = (c, now) => `<tr><td>${c.row}</td><td><b>${esc(c.name)}</b><div class="subtle">${esc(c.email)}</div></td><td>${esc(_LI_WHY[c.why] || c.why)}${c.who ? `<div class="subtle">Page is ${esc(c.who)}</div>` : ""}${c.reason ? `<div class="subtle">${esc(c.reason)}</div>` : ""}</td><td>${_liLink(c.old)}</td><td>${now}</td></tr>`;
+  setHTML($("#liRows"), changed.map((c) => row(c, _liLink(c.new) + `<div class="subtle">Needs Write on Pipe</div>`)).join("") + left.map((c) => row(c, `<span class="subtle">${esc(c.note || "Left for a person")}</span>`)).join("") || `<tr><td colspan="5" class="empty">${d.running ? "Checking…" : "Every link checked out."}</td></tr>`);
+}
+async function liLoad() {
+  try { const d = await readResponse(await fetch("/api/linkedin-review")); liRender(d); clearTimeout(_liTimer); if (d.running) _liTimer = setTimeout(liLoad, 5000); }
+  catch (e) { $("#liMsg").className = "msg err"; $("#liMsg").textContent = e.message; }
+}
+$("#liRun").addEventListener("click", async () => {
+  const b = $("#liRun"); b.disabled = true;
+  try { await readResponse(await fetch("/api/linkedin-review", { method: "POST" })); liLoad(); }
+  catch (e) { b.disabled = false; $("#liMsg").className = "msg err"; $("#liMsg").textContent = e.message; }
+});
+liLoad();

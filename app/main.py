@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, dedupe, gtm, pipedrive, sheets, source_status
+from . import config, db, dedupe, gtm, pipedrive, review_agent, sheets, source_status
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -219,6 +219,12 @@ def _run_cycle(trigger: str) -> dict:
                 for k in ("report", "report_issue", "marked_in_progress", "source_issue"):
                     if k in pushed:
                         result[k] = pushed[k]
+                # New rows landed in the sheet (push playing): check their LinkedIn
+                # links; bad ones are fixed or cleared here and in the sheet, never Pipedrive.
+                if pushed["added"]:
+                    rev = review_agent.run(only_new=True, sync=lambda: _locked_sync(add_new=not _push_paused()))
+                    if rev.get("checked"):
+                        result["li_review"] = {"checked": rev["checked"], "changed": len(rev.get("changed", []))}
         except Exception as e:  # noqa: BLE001 — never let the loop die; show it instead
             result["error"] = str(e)[:300]
         finally:
@@ -272,8 +278,8 @@ def _start_scheduler() -> None:
 
 # ── Daily Pipedrive run ───────────────────────────────────────────────────
 # At each of AUTO_PIPE_TIMES (AUTO_PIPE_TZ), when ▶ Pipe is on: push the accepted
-# leads to the sheet (even while push automation is paused), then create the
-# Pipedrive deals of the new leads only.
+# leads to the sheet (even while push automation is paused), check the LinkedIn
+# links of the new rows, then create the Pipedrive deals of the new leads only.
 # A run missed by a restart is caught up within 3 h; never twice per time slot.
 _PIPE_CATCH_UP = 3 * 3600
 
@@ -300,6 +306,7 @@ def _run_pipe(slot: float) -> dict:
         try:
             pushed = _locked_sync(add_new=True)
             out["added"] = pushed["added"]
+            review_agent.run(only_new=True, sync=lambda: _locked_sync(add_new=True))
             with _pd_lock:                       # waits for a manual Write on Pipe to finish
                 out.update(pipedrive.write_new())
         except Exception as e:  # noqa: BLE001 — record it; the next slot tries again
@@ -1236,9 +1243,13 @@ def sheets_push() -> JSONResponse:
     if not config.GOOGLE_DEST_SHEET_ID:
         raise HTTPException(400, "No destination sheet configured (GOOGLE_DEST_SHEET_ID).")
     try:
-        return JSONResponse(_locked_sync())
+        out = _locked_sync()
     except sheets.SheetsError as e:
         raise HTTPException(400, str(e))
+    # Check the LinkedIn links of the rows just added, in the background.
+    if out.get("added"):
+        out["li_check"] = review_agent.start(sync=lambda: _locked_sync(), only_new=True)
+    return JSONResponse(out)
 
 
 @app.get("/api/gtm")
@@ -1546,6 +1557,22 @@ def recheck(body: dict) -> JSONResponse:
         _sync_soon()
     threading.Thread(target=run, daemon=True).start()
     return JSONResponse({"ok": True, "started": ids})
+
+
+@app.get("/api/linkedin-review")
+def linkedin_review() -> JSONResponse:
+    return JSONResponse({**review_agent.status(), "running": review_agent.is_running()})
+
+
+@app.post("/api/linkedin-review")
+def linkedin_review_start() -> JSONResponse:
+    """Open every LinkedIn link in the Pipedrive sheet and fix or clear the bad
+    ones (in LeadSearch and the sheet — Pipedrive only on Write on Pipe)."""
+    if not config.GOOGLE_DEST_SHEET_ID:
+        raise HTTPException(400, "No destination sheet configured (GOOGLE_DEST_SHEET_ID).")
+    if not review_agent.start(sync=lambda: _locked_sync(add_new=not (config.SCHEDULER_ENABLED and _push_paused()))):
+        raise HTTPException(409, "A LinkedIn check is already running.")
+    return JSONResponse({"ok": True})
 
 
 def _safe(fn) -> None:

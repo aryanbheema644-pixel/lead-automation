@@ -24,6 +24,7 @@
         <a href="#review" data-page="review" class="nav-item"><svg width="18" height="18" viewBox="0 0 24 24" class="ico"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 10l2 2 4-4"/></svg> Review <span id="reviewCount" class="nav-badge">0</span></a>
         <a href="#duplicates" data-page="duplicates" class="nav-item"><svg width="18" height="18" viewBox="0 0 24 24" class="ico"><rect x="3" y="6" width="11" height="13" rx="2"/><path d="M10 6V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5"/></svg> Duplicates <span id="dupCount" class="nav-badge">0</span></a>
         <a href="#pipedrive" data-page="pipedrive" class="nav-item"><svg width="18" height="18" viewBox="0 0 24 24" class="ico"><path d="M8 21V5h5a4 4 0 0 1 0 8H8"/></svg> Pipedrive</a>
+        <a href="#licheck" data-page="licheck" class="nav-item"><svg width="18" height="18" viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/><path d="M8.5 11l2 2 3.5-3.5"/></svg> LinkedIn check</a>
         <a href="#gtm" data-page="gtm" class="nav-item"><svg width="18" height="18" viewBox="0 0 24 24" class="ico"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg> GTM report</a>
         <a href="#written" data-page="written" class="nav-item"><svg width="18" height="18" viewBox="0 0 24 24" class="ico"><path d="M5 12l4 4 10-10"/><path d="M5 20h14"/></svg> Written on Pipedrive <span id="writtenCount" class="nav-badge">0</span></a>
       </nav>
@@ -200,6 +201,24 @@
           </div>
         </section>
 
+        <!-- LinkedIn check -->
+        <section class="page" data-page="licheck" hidden>
+          <div class="pd-head">
+            <p class="subtle">Opens every LinkedIn link in the Pipedrive sheet and checks the page is the lead's own: it must open <b>and</b> be the same person — clearly the same name, or else the AI judges it from the name, email, phone and message (sheet names are messy). When the AI isn't sure, nothing changes and the row is listed for you. Links that aren't LinkedIn are skipped. A bad link is re-checked in LeadSearch — replaced by a verified profile, or cleared when none can be confirmed — and the sheet follows. <b>Nothing is written to Pipedrive</b>: the changed rows are listed below for Write on Pipe. New rows are checked on their own right after a Push (and at the 8am and 5pm Pipe run).</p>
+            <div class="pd-actions">
+              <button class="btn primary" id="liRun">Check all links</button>
+            </div>
+          </div>
+          <div class="msg" id="liMsg"></div>
+          <div class="gtm-grid" id="liNumbers"></div>
+          <div class="panel view">
+            <table class="leads">
+              <thead><tr><th>Row</th><th>Lead</th><th>What was wrong</th><th>Before</th><th>Now</th></tr></thead>
+              <tbody id="liRows"><tr><td colspan="5" class="empty">No check yet.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
         <!-- GTM report -->
         <section class="page" data-page="gtm" hidden>
           <div class="pd-head">
@@ -249,6 +268,6 @@
   <div id="drawer" class="drawer">
     <div class="drawer-panel"><button class="drawer-close" id="drawerClose">✕</button><div id="drawerBody"></div></div>
   </div>
-  <script src="/static/app.js?v=46"></script>
+  <script src="/static/app.js?v=47"></script>
 </body>
 </html>
