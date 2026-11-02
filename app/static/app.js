@@ -317,6 +317,14 @@ function _lastRunText(l) {
   if (l.incomplete) p.push(`${l.incomplete} incomplete held back`);
   return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (resumed)" : ""}: ${p.join(" · ") || "nothing new"}`;
 }
+function _pipeLastText(r) {
+  const at = new Date(r.slot * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  if (r.error) return `Pipedrive run ${at} failed: ${r.error}`;
+  const p = [`${r.added || 0} pushed to the sheet`, `${r.created || 0} new deal${r.created === 1 ? "" : "s"} created`];
+  if (r.held && r.held.length) p.push(`${r.held.length} older/undated left for Write on Pipe`);
+  if (r.errors && r.errors.length) p.push(`${r.errors.length} failed`);
+  return `Pipedrive run ${at}: ${p.join(" · ")}`;
+}
 let _autoPushing = false;   // push automation playing -> manual Push is redundant
 function renderAutomation(a) {
   const el = $("#autoBar"); if (!el || !a) return;
@@ -331,11 +339,15 @@ function renderAutomation(a) {
   const toggle = (target, paused) => paused
     ? `<button class="auto-btn" data-target="${target}" data-pause="0" title="Resume ${target}: runs now, then every ${min} min">▶ ${target === "pull" ? "Pull" : "Push"}</button>`
     : `<button class="auto-btn on" data-target="${target}" data-pause="1" title="Pause ${target}">⏸ ${target === "pull" ? "Pull" : "Push"}</button>`;
+  const pipe = a.pipe_paused
+    ? `<button class="auto-btn" data-target="pipe" data-pause="0" title="Every day at ${esc((a.pipe_times || []).join(" and "))}: push leads to the sheet and create the Pipedrive deals of the new ones (links/updates stay manual)">▶ Pipe</button>`
+    : `<button class="auto-btn on" data-target="pipe" data-pause="1" title="Stop creating Pipedrive deals automatically">⏸ Pipe</button>`;
   const part = (label, paused) => `${label} <b class="${paused ? "st-off" : "st-on"}">${paused ? "paused" : "on"}</b>`;
   const title = both ? "<b>Automation paused</b>" : !a.paused && !a.push_paused ? "<b>Automation on</b>" : "<b>Automation partly on</b>";
   const when = both ? (a.running ? " · finishing the current cycle…" : "") : ` · every ${min} min · <span id="autoNext">${a.running ? "running now…" : ""}</span>`;
-  setHTML(el, `${toggle("pull", a.paused)}${toggle("push", a.push_paused)}<span class="auto-dot ${both ? "paused" : "on"}"></span>${title}${when}` +
-    `<span class="sub">${part("pull", a.paused)} · ${part("push to sheet", a.push_paused)}${a.push_paused ? " — use ↑ Push" : ""}</span>` +
+  setHTML(el, `${toggle("pull", a.paused)}${toggle("push", a.push_paused)}${pipe}<span class="auto-dot ${both ? "paused" : "on"}"></span>${title}${when}` +
+    `<span class="sub">${part("pull", a.paused)} · ${part("push to sheet", a.push_paused)}${a.push_paused ? " — use ↑ Push" : ""} · ${part("new deals to Pipedrive", a.pipe_paused)}${a.pipe_paused ? "" : ` at ${esc((a.pipe_times || []).join(" & "))} IST`}</span>` +
+    (a.pipe_last ? `<span class="sub">${esc(_pipeLastText(a.pipe_last))}</span>` : "") +
     `<span class="sub">${esc(_lastRunText(a.last))}</span>${disk}`);
   tickAutomation();
 }

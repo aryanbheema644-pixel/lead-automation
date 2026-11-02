@@ -9,7 +9,9 @@ import os
 import re
 import time
 import threading
+import datetime as dt
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -265,6 +267,60 @@ def _start_scheduler() -> None:
         db.meta_set("sched_running", "0")      # a restart ends any cycle in flight
         _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
         _scheduler_thread.start()
+        threading.Thread(target=_pipe_loop, daemon=True).start()
+
+
+# ── Daily Pipedrive run ───────────────────────────────────────────────────
+# At each of AUTO_PIPE_TIMES (AUTO_PIPE_TZ), when ▶ Pipe is on: push the accepted
+# leads to the sheet (even while push automation is paused), then create the
+# Pipedrive deals of the new leads only.
+# A run missed by a restart is caught up within 3 h; never twice per time slot.
+_PIPE_CATCH_UP = 3 * 3600
+
+
+def _pipe_slots(now: float) -> tuple[float, float]:
+    """(the latest slot at or before now, the next slot after now) as timestamps."""
+    tz = ZoneInfo(config.AUTO_PIPE_TZ)
+    today = dt.datetime.fromtimestamp(now, tz).date()
+    slots = sorted(dt.datetime.combine(today + dt.timedelta(days=d), dt.time.fromisoformat(t), tz).timestamp()
+                   for d in (-1, 0, 1) for t in config.AUTO_PIPE_TIMES)
+    return max(t for t in slots if t <= now), min(t for t in slots if t > now)
+
+
+def _pipe_last() -> dict | None:
+    try:
+        return json.loads(db.meta_get("pd_daily_result", "") or "null")
+    except json.JSONDecodeError:
+        return None
+
+
+def _run_pipe(slot: float) -> dict:
+    out: dict = {"slot": slot, "started": time.time()}
+    with _cycle_lock:                            # not in the middle of a pull/process cycle
+        try:
+            pushed = _locked_sync(add_new=True)
+            out["added"] = pushed["added"]
+            with _pd_lock:                       # waits for a manual Write on Pipe to finish
+                out.update(pipedrive.write_new())
+        except Exception as e:  # noqa: BLE001 — record it; the next slot tries again
+            out["error"] = str(e)[:300]
+    out["finished"] = time.time()
+    db.meta_set("pd_daily_last", str(slot))
+    db.meta_set("pd_daily_result", json.dumps(out))
+    return out
+
+
+def _pipe_loop() -> None:
+    while not _scheduler_stop.wait(60):
+        if pipedrive.auto_paused():
+            continue
+        try:
+            slot, _ = _pipe_slots(time.time())
+            done = float(db.meta_get("pd_daily_last", "0") or 0)
+            if slot > done and time.time() - slot < _PIPE_CATCH_UP:
+                _run_pipe(slot)
+        except Exception:  # noqa: BLE001 — never let the loop die
+            pass
 
 
 _last_recount = 0.0
@@ -311,6 +367,10 @@ def _automation_status() -> dict:
         "running": db.meta_get("sched_running") == "1",
         "paused": _paused(),
         "push_paused": _push_paused(),
+        "pipe_paused": pipedrive.auto_paused(),
+        "pipe_times": config.AUTO_PIPE_TIMES,
+        "pipe_next_in": round(_pipe_slots(time.time())[1] - time.time()),
+        "pipe_last": _pipe_last(),
         "next_in": (max(0, round(nxt - time.time()))
                     if config.SCHEDULER_ENABLED and nxt and not _all_paused() else None),
         "last": last,
@@ -1275,17 +1335,23 @@ _pd_job: dict = {"running": False}
 
 @app.post("/api/automation/pause")
 def automation_pause(body: dict) -> JSONResponse:
-    """Pause or resume the pull or the push automation ({"target": "pull"|"push",
-    "paused": bool}); the two are independent. Pausing lets a running cycle
+    """Pause or resume the pull, the push or the Pipedrive automation ({"target":
+    "pull"|"push"|"pipe", "paused": bool}); they are independent ("pipe" = the
+    daily push + new Pipedrive deals at AUTO_PIPE_TIMES). Pausing lets a running cycle
     finish; resuming runs a cycle right away (catching leads that arrived, or
     pushing what was held back), then every interval again. Persisted."""
     if not config.SCHEDULER_ENABLED:
         raise HTTPException(400, "Automation is not enabled on this server (SCHEDULER_ENABLED).")
     target = body.get("target", "pull")
-    if target not in ("pull", "push"):
-        raise HTTPException(400, "target must be 'pull' or 'push'")
+    if target not in ("pull", "push", "pipe"):
+        raise HTTPException(400, "target must be 'pull', 'push' or 'pipe'")
     paused = bool(body.get("paused"))
-    db.meta_set("sched_paused" if target == "pull" else "sched_push_paused", "1" if paused else "0")
+    db.meta_set({"pull": "sched_paused", "push": "sched_push_paused", "pipe": "pd_auto_paused"}[target],
+                "1" if paused else "0")
+    if target == "pipe":
+        if not paused:                          # first run at the next time, not one already past
+            db.meta_set("pd_daily_last", str(_pipe_slots(time.time())[0]))
+        return JSONResponse(_automation_status())
     if not paused:
         _set_next_run(time.time())
     _wake.set()                                 # let the loop see the change now

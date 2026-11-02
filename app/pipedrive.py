@@ -200,7 +200,7 @@ def _links() -> dict[str, dict]:
         return {}
 
 
-def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> dict:
+def sync(live: bool = False, only: list[dict] | None = None, progress=None, note: str = "") -> dict:
     """Plan (dry run) or apply the sheet -> Pipedrive sync. Returns the plan:
     one entry per sheet row with what was / would be done.
 
@@ -263,6 +263,9 @@ def sync(live: bool = False, only: list[dict] | None = None, progress=None) -> d
             entry["notes"].append(str(e))
         counts[entry["status"]] = counts.get(entry["status"], 0) + 1
     if live:
+        if note:
+            for e in plan:
+                e["notes"].append(note)
         db.meta_set("pd_links", json.dumps(links))
         db.meta_set("pd_last_sync", str(time.time()))
         _log([e for e in plan if e["status"] in ("create", "link", "update", "error")])
@@ -353,6 +356,40 @@ def _sync_row(c: Client, r: dict, entry: dict, links: dict, by_contact: dict,
                            "visible_to": "1"})
         entry["deal_id"] = d["id"]
         links[key] = {"deal_id": d["id"], "person_id": pid, "last": want}
+
+
+# Auto-write (the daily Pipedrive run, when switched on): only rows that would
+# CREATE a deal, i.e. a lead with no deal in the pipeline yet. Rows that would
+# link to an existing deal or update one are left for Write on Pipe. A row
+# older than this many days (or with no date) is never auto-created, so a lost
+# link store can't flood Pipedrive with old leads; at most this many per run.
+AUTO_MAX_AGE_DAYS = 14
+AUTO_MAX_PER_RUN = 25
+
+
+def auto_paused() -> bool:
+    return db.meta_get("pd_auto_paused", "1") == "1"      # off until switched on
+
+
+def write_new() -> dict:
+    """Preview the sheet, then write only the new deals. Returns
+    {"created": n, "held": [names too old / undated], "errors": [..]}."""
+    plan = sync(live=False)["plan"]
+    cutoff = time.time() - AUTO_MAX_AGE_DAYS * 86400
+    new, held = [], []
+    for e in plan:
+        if e["status"] != "create":
+            continue
+        day = time.mktime(time.strptime(e["day"], "%Y-%m-%d")) if e["day"] else 0
+        (new if day >= cutoff else held).append(e)
+    out = {"created": 0, "held": [e["name"] for e in held], "errors": []}
+    if not new:
+        return out
+    res = sync(live=True, only=[{"row": e["row"], "key": e["key"]} for e in new[:AUTO_MAX_PER_RUN]],
+               note="written automatically (new deal)")
+    out["created"] = res["counts"].get("create", 0)
+    out["errors"] = [f"{e['name']}: {'; '.join(e['notes'][:1])}" for e in res["plan"] if e["status"] == "error"]
+    return out
 
 
 def _log(entries: list[dict]) -> None:

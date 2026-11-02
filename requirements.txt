@@ -6,3 +6,4 @@ python-multipart==0.0.20
 pydantic==2.10.4
 gspread==6.1.4
 google-auth==2.35.0
+tzdata==2024.2

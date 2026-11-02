@@ -135,6 +135,11 @@ GTM_SQL_ROW = "{ae} - SQL"          # e.g. "Rahul - SQL"; {ae} = the AE's first 
 SCHEDULER_ENABLED = _get("SCHEDULER_ENABLED", "false").lower() in ("1", "true", "yes")
 SCHEDULER_INTERVAL_SECONDS = _get_int("SCHEDULER_INTERVAL_SECONDS", 600)  # 10 min
 SCHEDULER_MAX_PER_CYCLE = _get_int("SCHEDULER_MAX_PER_CYCLE", 50)  # cap new leads/cycle
+# Daily Pipedrive run (when switched on with ▶ Pipe): at these local times, push
+# the accepted leads to the sheet, then create the Pipedrive deals of the new
+# ones (see pipedrive.write_new).
+AUTO_PIPE_TZ = _get("AUTO_PIPE_TZ", "Asia/Kolkata")
+AUTO_PIPE_TIMES = [t.strip() for t in _get("AUTO_PIPE_TIMES", "08:00,17:00").split(",") if t.strip()]
 
 
 MAX_RESULTS_PER_LEAD = _get_int("MAX_RESULTS_PER_LEAD", 10)
