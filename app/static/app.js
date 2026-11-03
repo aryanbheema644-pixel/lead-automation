@@ -313,6 +313,7 @@ function _lastRunText(l) {
   if (l.in_review) p.push(`${l.in_review} awaiting review`);
   if (l.report && l.report.changed) p.push(`GTM report: ${l.report.changed} cell(s) recounted`);
   if (l.marked_in_progress) p.push(`${l.marked_in_progress} marked In Progress`);
+  if (l.source_cleaned) p.push(`${l.source_cleaned} cell(s) cleaned in the lead sheet`);
   if (l.report_issue) p.push(`GTM report issue: ${l.report_issue}`);
   if (l.incomplete) p.push(`${l.incomplete} incomplete held back`);
   return `last run ${_ago(l.finished)}${l.trigger === "manual" ? " (resumed)" : ""}: ${p.join(" · ") || "nothing new"}`;

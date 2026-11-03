@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, dedupe, gtm, pipedrive, review_agent, sheets, source_status
+from . import config, db, dedupe, gtm, pipedrive, review_agent, sheets, source_status, source_writeback
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -216,7 +216,7 @@ def _run_cycle(trigger: str) -> dict:
                 pushed = _locked_sync(add_new=not _push_paused())
                 result.update(added=pushed["added"], updated=pushed["updated"],
                               in_review=pushed["in_review"], incomplete=len(pushed["incomplete"]))
-                for k in ("report", "report_issue", "marked_in_progress", "source_issue"):
+                for k in ("report", "report_issue", "marked_in_progress", "source_cleaned", "source_issue"):
                     if k in pushed:
                         result[k] = pushed[k]
                 # New rows landed in the sheet (push playing): check their LinkedIn
@@ -347,6 +347,14 @@ def _locked_sync(add_new: bool = True) -> dict:
                 out["marked_in_progress"] = marked
         except Exception as e:  # noqa: BLE001 — must not fail the push
             out["source_issue"] = f"Lead sheet not marked: {str(e)[:200]}"
+        # The clean values (verified LinkedIn, fuller name, visa, company, AE, …)
+        # replace the old ones on the lead's row in the lead sheet too.
+        try:
+            cleaned = source_writeback.sync(_channel_from_tab, _dest_fields)["written"]
+            if cleaned:
+                out["source_cleaned"] = cleaned
+        except Exception as e:  # noqa: BLE001 — must not fail the push
+            out["source_issue"] = f"Lead sheet not updated: {str(e)[:200]}"
         # A recount reads the whole lead sheet; several lead edits in a row must
         # not eat the Google Sheets read quota. The next cycle catches up.
         if config.GTM_SHEET_ID and time.time() - _last_recount > 120:
