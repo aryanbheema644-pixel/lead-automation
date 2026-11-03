@@ -10,6 +10,11 @@ All three share ONE cycle: every lead an AE gets uses up their turn, so a
 LATAM lead to Agustina means the next normal lead skips her. Each lead goes to
 the allowed AE who has had the fewest turns (ties in rotation order), so totals
 stay level however many leads are LATAM.
+
+Re-engagement: a lead whose person already has a deal in Pipedrive goes to
+that deal's AE and uses up NO turn. Write on Pipe links such a lead to the
+existing deal and leaves its owner as is, so charging a turn would make the
+rotation skip an AE for a lead they never get.
 """
 from __future__ import annotations
 
@@ -143,11 +148,39 @@ def move_turn(old: str, new: str) -> None:
             db.meta_set("ae_turns", json.dumps(state))
 
 
+def existing_owner(lead: dict) -> str:
+    """The AE (as named in the rules) who owns this person's latest deal in
+    Pipedrive, or '' if there's none, it's not one of ours, or Pipedrive can't
+    be reached (the lead then goes through the rotation)."""
+    if not config.PIPEDRIVE_API_TOKEN or not (lead.get("email") or lead.get("phone")):
+        return ""
+    from .. import pipedrive
+    from ..gtm import _find_people
+    by_id = {pid: name for name, (pid, _full) in config.AE_DIRECTORY.items()}
+    try:
+        c = pipedrive.Client(write=False)
+        deals = [d for pid in _find_people(c, {"email": lead.get("email") or "", "phone": lead.get("phone") or ""})
+                 for d in c.get(f"/persons/{pid}/deals", status="all_not_deleted").get("data") or []]
+    except Exception:  # noqa: BLE001 — no lookup = normal rotation
+        return ""
+    for d in sorted(deals, key=lambda d: d.get("add_time") or "", reverse=True):
+        u = d.get("user_id")
+        name = by_id.get(str(u.get("id") if isinstance(u, dict) else u))
+        if name:
+            return next((n for n in config.AE_ROUND_ROBIN + config.AE_LATAM + [config.AE_PILOT]
+                         if n and n.lower() == name), name.title())
+    return ""
+
+
 def assign_owner(lead: dict) -> str:
     """Pick the AE for a lead per the distribution rules (advances round-robin).
     AEs on leave are skipped: LATAM goes to whichever LATAM AE is on duty (else
     the normal rotation), pilots to the pilot AE if on duty (else the normal
-    rotation). '' when nobody is on duty — the lead then waits without an AE."""
+    rotation). '' when nobody is on duty — the lead then waits without an AE.
+    A re-engagement (already has a deal) goes to that deal's AE, no turn used."""
+    prior = existing_owner(lead)
+    if prior:
+        return prior
     off = on_leave()
     working = lambda names: [n for n in names if n and n.lower() not in off]
     latam = working(config.AE_LATAM)
