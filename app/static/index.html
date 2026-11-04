@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LeadSearch</title>
-  <link rel="stylesheet" href="/static/styles.css?v=32" />
+  <link rel="stylesheet" href="/static/styles.css?v=33" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -141,6 +141,18 @@
         <section class="page" data-page="leads" hidden>
           <div class="chan-filter" id="chanFilter" role="tablist" aria-label="Filter leads by channel"></div>
           <div class="status-bar" id="statusBar" hidden></div>
+          <div class="pd-filters">
+            <select id="leadStatus" class="pd-select" aria-label="Status">
+              <option value="all">All statuses</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option>
+              <option value="review">Needs review</option><option value="queued">Queued</option><option value="duplicate">Duplicate</option><option value="error">Error</option>
+            </select>
+            <select id="leadWhen" class="pd-select" aria-label="Date">
+              <option value="all">All dates</option><option value="today">Today</option><option value="yesterday">Yesterday</option>
+              <option value="week">This week</option><option value="lastweek">Last week</option><option value="older">Older</option><option value="date">Exact date…</option>
+            </select>
+            <input type="date" id="leadDate" class="pd-select date-pick" aria-label="Exact date" title="Pick an exact date" />
+            <span class="subtle" id="leadShown"></span>
+          </div>
           <div class="panel view">
             <table class="leads">
               <thead><tr><th>#</th><th>Name</th><th>Channel</th><th>Status</th><th>Top match</th><th>Fit</th><th>AE</th><th></th></tr></thead>
@@ -178,8 +190,9 @@
           <div class="pd-filters" id="pdFilters" hidden>
             <select id="pdWhen" class="pd-select" aria-label="Date of lead">
               <option value="all">All dates</option><option value="today">Today</option><option value="yesterday">Yesterday</option>
-              <option value="week">This week</option><option value="lastweek">Last week</option><option value="older">Older</option>
+              <option value="week">This week</option><option value="lastweek">Last week</option><option value="older">Older</option><option value="date">Exact date…</option>
             </select>
+            <input type="date" id="pdDate" class="pd-select date-pick" aria-label="Exact date of lead" title="Pick an exact date" />
             <select id="pdAe" class="pd-select" aria-label="AE"></select>
             <select id="pdSource" class="pd-select" aria-label="Source"></select>
             <label class="pd-check"><input type="checkbox" id="pdNewOnly" /> Only new since my last preview <span class="n" id="pdNewN"></span></label>
@@ -243,6 +256,14 @@
         <!-- Written on Pipedrive -->
         <section class="page" data-page="written" hidden>
           <p class="subtle pd-intro">Every lead written to Pipedrive with <b>Write on Pipe</b>, newest first.</p>
+          <div class="pd-filters">
+            <select id="wrWhen" class="pd-select" aria-label="Date written">
+              <option value="all">All dates</option><option value="today">Today</option><option value="yesterday">Yesterday</option>
+              <option value="week">This week</option><option value="lastweek">Last week</option><option value="older">Older</option><option value="date">Exact date…</option>
+            </select>
+            <input type="date" id="wrDate" class="pd-select date-pick" aria-label="Exact date written" title="Pick an exact date" />
+            <span class="subtle" id="wrShown"></span>
+          </div>
           <div class="panel view">
             <table class="leads">
               <thead><tr><th>When</th><th>Lead</th><th>Deal</th><th>AE</th><th>What was done</th></tr></thead>
@@ -268,6 +289,6 @@
   <div id="drawer" class="drawer">
     <div class="drawer-panel"><button class="drawer-close" id="drawerClose">✕</button><div id="drawerBody"></div></div>
   </div>
-  <script src="/static/app.js?v=47"></script>
+  <script src="/static/app.js?v=48"></script>
 </body>
 </html>

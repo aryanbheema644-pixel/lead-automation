@@ -143,6 +143,28 @@ async function rejectLead(id) { await fetch(`/api/leads/${id}/reject`, { method:
 // ── Leads: filter by channel ─────────────────────────────────────────────
 const _CHAN_LABEL = { all: "All", Meta: "Meta", Website: "Website", WhatsApp: "WhatsApp (bot)" };
 const _CHAN_ORDER = ["Meta", "Website", "WhatsApp"];
+// Date filter shared by the Leads, Pipedrive and Written pages: a preset or an exact date.
+function dayMatches(day, f) {
+  if (f.when === "all") return true;
+  if (f.when === "date") return !f.date || day === f.date;
+  return pdWhen(day).includes(f.when);
+}
+function wireDateFilter(sel, input, f, onChange) {
+  $(sel).addEventListener("change", (e) => {
+    f.when = e.target.value;
+    if (f.when === "date") { try { $(input).showPicker(); } catch {} }
+    else { f.date = ""; $(input).value = ""; }
+    onChange();
+  });
+  $(input).addEventListener("change", (e) => {
+    f.date = e.target.value; f.when = f.date ? "date" : "all"; $(sel).value = f.when;
+    onChange();
+  });
+}
+const _tsDay = (t) => t ? _isoDay(new Date(t * 1000)) : "";
+const _leadF = { when: "all", date: "" };
+// Rejected leads are dated by when they were rejected; the others by when they came in.
+const _leadDay = (l) => _tsDay(l.status === "rejected" ? (l.rejected_at || l.updated_at) : l.created_at);
 let _chanFilter = "all";
 try { _chanFilter = localStorage.getItem("ls-chan") || "all"; } catch {}
 function renderChannelFilter(leads) {
@@ -176,21 +198,26 @@ async function loadLeads() {
   if (!leads.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No leads yet — upload a CSV or pull from your sheet.</td></tr>`); return; }
   _ownerById = Object.fromEntries(leads.map((x) => [x.id, x.owner]));
   const _dupTargets = new Set(leads.filter((x) => x.dup_of && x.status !== "duplicate").map((x) => x.dup_of));
-  renderChannelFilter(leads);
+  // Channel chips count what the status and date filters leave, so they match the table.
+  const base = leads.filter((l) => (_statusFilter === "all" || l.status === _statusFilter) && dayMatches(_leadDay(l), _leadF));
+  renderChannelFilter(base);
   renderStatusBar();
-  const shown = leads.filter((l) => (_chanFilter === "all" || (l.channel || "Not provided") === _chanFilter)
-                                 && (_statusFilter === "all" || l.status === _statusFilter));
-  if (!shown.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No ${_statusFilter === "all" ? "" : esc(_statusFilter) + " "}${_chanFilter === "all" ? "" : esc(_CHAN_LABEL[_chanFilter] || _chanFilter) + " "}leads.</td></tr>`); return; }
+  $("#leadStatus").value = _statusFilter;
+  const shown = base.filter((l) => _chanFilter === "all" || (l.channel || "Not provided") === _chanFilter);
+  $("#leadShown").textContent = `${shown.length} lead${shown.length === 1 ? "" : "s"}` + (_leadF.when === "all" ? "" : _statusFilter === "rejected" ? " · by date rejected" : " · by date it came in");
+  if (!shown.length) { setHTML(tb, `<tr><td colspan="8" class="empty">No ${_statusFilter === "all" ? "" : esc(_statusFilter) + " "}${_chanFilter === "all" ? "" : esc(_CHAN_LABEL[_chanFilter] || _chanFilter) + " "}leads${_leadF.when === "all" ? "" : " for this date"}.</td></tr>`); return; }
   if (setHTML(tb, shown.map((l) => `<tr>
     <td class="sub">${l.id}</td>
     <td class="name-cell">${esc(l.name || "—")}<div class="sub">${esc(l.email || "")}</div></td>
     <td>${l.channel ? `<span class="chip">${esc(l.channel)}</span>` : '<span class="sub">—</span>'}</td>
-    <td>${l.status === "duplicate" ? (l.prior_status && l.prior_status !== "queued" ? badge(l.prior_status) : '<span class="badge duplicate">merged on arrival</span>') : badge(l.status, l.stage)}${l.dup_of && l.status !== "duplicate" ? `<div><span class="dup-flag" title="${esc(l.dup_reason || "")}">possible duplicate of #${l.dup_of}</span></div>` : _dupTargets.has(l.id) ? `<div><span class="dup-flag">possible duplicate — check Duplicates</span></div>` : ""}${l.status === "duplicate" && l.merged_into ? `<div class="sub dup-merged">duplicate · merged into #${l.merged_into}</div>` : ""}</td>
+    <td>${l.status === "duplicate" ? (l.prior_status && l.prior_status !== "queued" ? badge(l.prior_status) : '<span class="badge duplicate">merged on arrival</span>') : badge(l.status, l.stage)}${l.dup_of && l.status !== "duplicate" ? `<div><span class="dup-flag" title="${esc(l.dup_reason || "")}">possible duplicate of #${l.dup_of}</span></div>` : _dupTargets.has(l.id) ? `<div><span class="dup-flag">possible duplicate — check Duplicates</span></div>` : ""}${l.status === "duplicate" && l.merged_into ? `<div class="sub dup-merged">duplicate · merged into #${l.merged_into}</div>` : ""}${l.status === "rejected" ? `<div class="sub">rejected ${new Date((l.rejected_at || l.updated_at) * 1000).toLocaleDateString([], { day: "numeric", month: "short" })}</div>` : ""}</td>
     <td>${topMatch(l)}</td>
     <td>${tierChip(l.screening)}</td>
     <td>${aeCell(l)}</td>
     <td>${rowActions(l)}</td></tr>`).join(""))) wireRowButtons(tb);
 }
+wireDateFilter("#leadWhen", "#leadDate", _leadF, () => loadLeads());
+$("#leadStatus").addEventListener("change", (e) => { location.hash = e.target.value === "all" ? "leads" : `leads/${e.target.value}`; });
 async function loadReview() {
   const { leads } = await (await fetch("/api/leads?status=review")).json();
   $("#reviewCount").textContent = leads.length;
@@ -521,7 +548,7 @@ const _PD_WRITABLE = new Set(["create", "link", "update"]);
 let _pdPlan = null;
 // Segments + filters. The selection is kept by lead (row|key), so switching a
 // segment or filter never loses what's ticked; Write on Pipe writes all of it.
-const _pdSel = new Set(), _pdF = { seg: "all", when: "all", ae: "all", source: "all", newOnly: false };
+const _pdSel = new Set(), _pdF = { seg: "all", when: "all", date: "", ae: "all", source: "all", newOnly: false };
 let _pdNew = new Set();
 const pdId = (e) => `${e.row}|${e.key}`;
 const pdDeal = (e, domain) => e.deal_id && domain ? `<a href="https://${esc(domain)}.pipedrive.com/deal/${e.deal_id}" target="_blank">${esc(e.title)} ↗</a>` : esc(e.title);
@@ -541,7 +568,7 @@ function pdWhen(day) {                        // weeks start on Sunday, like the
 function pdMatch(e, ignoreSeg) {
   const f = _pdF;
   if (!ignoreSeg && f.seg !== "all" && e.status !== f.seg) return false;
-  if (f.when !== "all" && !pdWhen(e.day).includes(f.when)) return false;
+  if (!dayMatches(e.day, f)) return false;
   if (f.ae !== "all" && (e.owner || "—") !== f.ae) return false;
   if (f.source !== "all" && (e.source || "—") !== f.source) return false;
   if (f.newOnly && !_pdNew.has(pdId(e))) return false;
@@ -603,12 +630,16 @@ async function pdPreview(note) {
   } catch (e) { m.className = "msg err"; m.textContent = (note ? note + " · " : "") + e.message; }
   finally { b.disabled = false; }
 }
+const _wrF = { when: "all", date: "" };
 async function pdLoadWritten() {
   let d; try { d = await (await fetch("/api/pipedrive/written")).json(); } catch { return; }
   $("#writtenCount").textContent = d.written.length;
-  setHTML($("#pdWritten"), d.written.map((e) => `<tr><td>${new Date(e.at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td><td><b>${esc(e.name)}</b><div class="subtle">${esc(e.email)}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
-    <td><span class="pd-tag pd-${e.status}">${_PD_DONE[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing written yet.</td></tr>`);
+  const shown = d.written.filter((e) => dayMatches(_tsDay(e.at), _wrF));
+  $("#wrShown").textContent = `${shown.length} written`;
+  setHTML($("#pdWritten"), shown.map((e) => `<tr><td>${new Date(e.at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td><td><b>${esc(e.name)}</b><div class="subtle">${esc(e.email)}</div></td><td>${pdDeal(e, d.domain)}</td><td>${esc(e.owner)}</td>
+    <td><span class="pd-tag pd-${e.status}">${_PD_DONE[e.status] || e.status}</span>${pdWhat(e)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">${_wrF.when === "all" ? "Nothing written yet." : "Nothing written on this date."}</td></tr>`);
 }
+wireDateFilter("#wrWhen", "#wrDate", _wrF, () => pdLoadWritten());
 $("#pdRows").addEventListener("change", (e) => {
   const c = e.target; if (!c.classList.contains("pd-pick")) return;
   c.checked ? _pdSel.add(c.dataset.id) : _pdSel.delete(c.dataset.id); pdRender();
@@ -618,7 +649,8 @@ $("#pdAll").addEventListener("change", (e) => {   // ticks / unticks the rows on
   pdRender();
 });
 $("#pdSegs").addEventListener("click", (e) => { const b = e.target.closest("[data-seg]"); if (b) { _pdF.seg = b.dataset.seg; pdRender(); } });
-[["#pdWhen", "when"], ["#pdAe", "ae"], ["#pdSource", "source"]].forEach(([s, k]) => $(s).addEventListener("change", (e) => { _pdF[k] = e.target.value; pdRender(); }));
+wireDateFilter("#pdWhen", "#pdDate", _pdF, () => pdRender());
+[["#pdAe", "ae"], ["#pdSource", "source"]].forEach(([s, k]) => $(s).addEventListener("change", (e) => { _pdF[k] = e.target.value; pdRender(); }));
 $("#pdNewOnly").addEventListener("change", (e) => { _pdF.newOnly = e.target.checked; pdRender(); });
 $("#pdSelbar").addEventListener("click", (e) => {   // select by kind, within the date/AE/source filters
   const b = e.target.closest("[data-pick]"); if (!b || !_pdPlan) return;

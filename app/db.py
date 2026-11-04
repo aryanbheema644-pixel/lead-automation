@@ -63,6 +63,7 @@ _COLUMNS = {
     "sheet_row": "INTEGER",        # dest-sheet row number we last wrote to (a hint)
     "created_at": "REAL",
     "updated_at": "REAL",
+    "rejected_at": "REAL",         # when a reviewer rejected it (Leads page date filter)
 }
 
 
@@ -78,6 +79,8 @@ def init_db() -> None:
                 simple = decl.replace("PRIMARY KEY AUTOINCREMENT", "") \
                              .replace("NOT NULL", "").strip()
                 conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {simple}")
+        # Leads rejected before rejected_at existed: nothing updates them after that.
+        conn.execute("UPDATE leads SET rejected_at = updated_at WHERE status = 'rejected' AND rejected_at IS NULL")
         # Small key/value table for round-robin counters etc.
         conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
         # Dedup store: keys of source rows we've already ingested (or baselined).

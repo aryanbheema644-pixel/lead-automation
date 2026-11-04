@@ -345,6 +345,9 @@ table.leads { width: 100%; border-collapse: collapse; }
 .pd-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
 .pd-select { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 6px 10px; cursor: pointer; }
 .pd-select option { background: var(--panel); color: var(--text); }
+.date-pick { padding: 5px 8px; }
+[data-theme="dark"] .date-pick { color-scheme: dark; }
+[data-theme="light"] .date-pick { color-scheme: light; }
 .pd-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer; padding: 6px 4px; }
 .pd-check .n { color: var(--muted); font-size: 12px; }
 .pd-selbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 12px; }

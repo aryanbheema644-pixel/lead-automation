@@ -1495,7 +1495,7 @@ def reject(lead_id: int) -> JSONResponse:
     fields = {}
     if not lead.get("pushed"):
         fields["owner"] = None             # never reached an AE: free the assignment
-    db.update_lead(lead_id, status="rejected",
+    db.update_lead(lead_id, status="rejected", rejected_at=time.time(),
                    reasoning="Manually rejected by reviewer.", **fields)
     if lead.get("pushed"):
         _sync_soon()                       # its sheet row shows "rejected"
