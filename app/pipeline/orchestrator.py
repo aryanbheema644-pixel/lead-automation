@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import unicodedata
 
-from .. import config, db, dedupe
+from .. import config, db, dedupe, gtm
 from . import distribution, llm, screening
 from .classify import classify
 from .decision import decide
@@ -156,6 +157,10 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
     doesn't stay in the Pipedrive sheet."""
     lead = db.get_lead(lead_id)
     if not lead:
+        return
+    if not recheck and gtm.is_test_entry(lead.get("email"), lead.get("name")):
+        db.update_lead(lead_id, status="rejected", stage="done", rejected_at=time.time(),
+                       reasoning="Test entry: never goes to an AE.")
         return
     if recheck:
         _rechecking.add(lead_id)

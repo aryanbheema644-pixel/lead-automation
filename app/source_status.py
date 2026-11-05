@@ -18,7 +18,7 @@ import json
 from gspread.utils import rowcol_to_a1
 
 from . import config, db, sheets
-from .gtm import _digits, _hkey, _parse_date
+from .gtm import _digits, _hkey, _parse_date, _swapped
 
 STATUS = "In Progress"
 _TRIES = 6                       # syncs to keep looking for a row that isn't there yet
@@ -99,7 +99,7 @@ def _find_row(values: list[list[str]], lead: dict, dc, ec, pc) -> int | None:
                 (len(phone) >= 7 and _digits(cell(pc))[-9:] == phone)):
             continue
         d = _parse_date(cell(dc)) if dc is not None else None
-        gap = abs((d - day).days) if d else 99
+        gap = min((abs((x - day).days) for x in (d, d and _swapped(d)) if x), default=99)
         if gap <= 3 and (best is None or gap < best[0]):
             best = (gap, i)                           # the first row on the closest day
     return best[1] if best else None

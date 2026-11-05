@@ -48,6 +48,7 @@ def _startup() -> None:
         threading.Thread(target=_backfill_heard_about, daemon=True).start()
     if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
         threading.Thread(target=_fix_old_visas, daemon=True).start()
+    _fix_lead_dates()
     db.relabel_channel("Upload", _NO_CHANNEL)
     dedupe.backfill_prior_status()
     if db.meta_get("dedupe_scanned") != "1":
@@ -130,6 +131,18 @@ def _backfill_heard_about() -> None:
         db.meta_set("heard_backfill_v1", "1")
     except Exception as e:  # noqa: BLE001 — retried on next start
         db.meta_set("heard_backfill_result", json.dumps({"error": str(e)[:200]}))
+
+
+def _fix_lead_dates() -> None:
+    """Leads pulled while the lead sheet had their date swapped or missing get
+    the real one, judged by the day they arrived. Nothing changes once it's right."""
+    for l in db.list_leads():
+        if l.get("origin") != "sheet" or not l.get("lead_date"):
+            continue
+        near = dt.datetime.fromtimestamp(l.get("created_at") or 0).date()
+        fixed = gtm.clean_lead_date(l["lead_date"], near)
+        if fixed != l["lead_date"]:
+            db.update_lead(l["id"], lead_date=fixed)
 
 
 def _fix_old_visas() -> None:
@@ -526,7 +539,7 @@ def _insert_row(val, channel: str = "", link: str = "", origin: str = "") -> boo
         val("name"), val("company"), val("email"), val("phone"), val("message"),
         linkedin=info["linkedin_url"], li_optout=1 if info["optout"] else 0,
         other_link=canonical_url(info["other_url"]) or info["other_url"],
-        link_raw=raw_link, visa=normalize_visa(val("visa")), lead_date=val("date"),
+        link_raw=raw_link, visa=normalize_visa(val("visa")), lead_date=(gtm.clean_lead_date(val("date"), dt.date.today()) if origin == "sheet" else val("date")),
         heard_about=val("heard_about"),
         # Pulled from a source tab: the tab IS the channel (a column like "Where
         # have you heard about us" must never override it). Uploads: the row's

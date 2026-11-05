@@ -41,6 +41,7 @@ _TEST_DOMAINS = ("example.com", "example.org", "example.net", "test.com")
 # Same person on two tabs the same day: the first application wins. The WhatsApp
 # chatbot follows up Meta ad leads, so Meta goes before WhatsApp.
 _TAB_ORDER = {"Website": 0, "Meta": 1, "WhatsApp": 2}
+_DATE_WINDOW = 14    # days a lead's date can sit from its neighbours before it's checked for a swap
 
 
 def _parse_date(text: str) -> dt.date | None:
@@ -62,6 +63,45 @@ def _parse_date(text: str) -> dt.date | None:
         except ValueError:
             return None
     return None
+
+
+def _swapped(d: dt.date) -> dt.date | None:
+    """The same date with day and month the other way round, if that's a date."""
+    try:
+        return dt.date(d.year, d.day, d.month)
+    except ValueError:
+        return None
+
+
+def fix_date(raw: str, near: dt.date | None, alt: str = "") -> dt.date | None:
+    """A lead's real date, given a date it must be close to (when it arrived, or
+    the row above it). New rows can reach the lead sheet with day and month
+    swapped (4 Nov as "11-Apr-2026" or a serial number), or with the form's name
+    in the date column and the date in the next one ("04/11/2026")."""
+    d = _parse_date(raw) or _parse_date(alt)
+    if not d:
+        return near if (raw or "").strip() else None
+    if near and abs((d - near).days) > _DATE_WINDOW:
+        s = _swapped(d)
+        if s and abs((s - near).days) <= _DATE_WINDOW:
+            return s
+    return d
+
+
+def clean_lead_date(raw: str, near: dt.date) -> str:
+    """The date text to store: `raw` when it's right, else the corrected date in
+    the sheet's own style ("4-Nov-2026"). A blank stays blank."""
+    d = fix_date(raw, near)
+    if not d or d == _parse_date(raw):
+        return raw
+    return f"{d.day}-{d:%b-%Y}"
+
+
+def is_test_entry(email: str, name: str) -> bool:
+    """Our own or a made-up test entry ("Test Person", test@example.com)."""
+    email, domain = (email or "").strip().lower(), (email or "").strip().lower().split("@")[-1]
+    return (domain in _TEST_DOMAINS or domain in _INTERNAL or bool(re.fullmatch(r"test\d*@.*", email))
+            or bool(re.search(r"\btest\b", (name or "").lower())))
 
 
 def _hkey(h: str) -> str:
@@ -91,8 +131,11 @@ def _source_leads(channel_of, start: dt.date, end: dt.date) -> list[dict]:
             return ""
         channel = channel_of(title)
         order = _TAB_ORDER.get(channel, 3)
+        near = None                             # rows run in date order: the row above
         for n, r in enumerate(rows[1:], start=2):
-            d = _parse_date(col(r, "date of lead", "date od lead", "timestamp"))
+            d = fix_date(col(r, "date of lead", "date od lead", "timestamp"), near,
+                         col(r, "time of lead (hongkong time)"))
+            near = d or near
             if d and d > today + dt.timedelta(days=1):            # day/month swapped
                 try:
                     d = dt.date(d.year, d.day, d.month)
@@ -115,9 +158,7 @@ def _is_junk(lead: dict) -> bool:
     keyboard mash (kjhdsasdsdf, hardly any vowels) or bot names in random case
     (QBQWWWhdLKEoBnBnWpi)."""
     email, name = lead["email"], lead["name"]
-    if email.split("@")[-1] in _TEST_DOMAINS or re.fullmatch(r"test\d*@.*", email):
-        return True
-    if re.search(r"\btest\b", name.lower()):
+    if is_test_entry(email, name):
         return True
     if "@" in name:                                    # an email typed in the name box
         return False
@@ -267,6 +308,15 @@ def _week_rows() -> list[str]:
     return list(dict.fromkeys(rows))
 
 
+def _row_of(rows: dict, label: str) -> int | None:
+    """The row for a label. The AE rows are "Rahul - SQL" or, as the team now
+    calls them, "Rahul - MQL"."""
+    for name in (label, label.replace(" - SQL", " - MQL")):
+        if _hkey(name) in rows:
+            return rows[_hkey(name)]
+    return None
+
+
 def recount(channel_of, weeks_back: int = 1, write: bool = True) -> dict:
     """Recount this week and `weeks_back` weeks before it; overwrite their cells."""
     out = {"weeks": {}, "changed": 0, "skipped": []}
@@ -298,8 +348,10 @@ def recount(channel_of, weeks_back: int = 1, write: bool = True) -> dict:
         if src is not None:
             _copy_formulas(ws, values, formulas, src, c)
         for label in _week_rows():
-            r = rows.get(_hkey(label))
+            r = _row_of(rows, label)
             if r is None:
+                if res["counts"].get(label):
+                    out["skipped"].append(f"no row called {label!r} in {config.GTM_TAB}")
                 continue
             if str(formulas[r][c] if c < len(formulas[r]) else "").startswith("="):
                 out["skipped"].append(f"{rowcol_to_a1(r + 1, c + 1)} is a formula")
