@@ -368,7 +368,7 @@ AUTO_MAX_PER_RUN = 25
 
 
 def auto_paused() -> bool:
-    return db.meta_get("pd_auto_paused", "1") == "1"      # off until switched on
+    return db.meta_get("pd_auto_paused", "0") == "1"      # on unless someone switches it off
 
 
 def write_new() -> dict:
