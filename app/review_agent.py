@@ -10,7 +10,7 @@ bad link (dead, someone else's) gets its lead re-checked
 one or cleared, and the sheet follows. Nothing is written to Pipedrive — the
 changed rows are listed so a person can press Write on Pipe.
 
-Runs after a Push (manual, a cycle that added rows, or the 8am/5pm Pipe run) on
+Runs after a Push (manual, a cycle that added rows, or the 5am/8pm Pipe run) on
 the rows that are new or whose link changed: links already confirmed are
 remembered (meta "li_reviewed": email -> link). The button checks every row.
 """

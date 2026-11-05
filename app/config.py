@@ -139,7 +139,7 @@ SCHEDULER_MAX_PER_CYCLE = _get_int("SCHEDULER_MAX_PER_CYCLE", 50)  # cap new lea
 # the accepted leads to the sheet, check their LinkedIn links, then create the
 # Pipedrive deals of the new ones (see pipedrive.write_new).
 AUTO_PIPE_TZ = _get("AUTO_PIPE_TZ", "Asia/Kolkata")
-AUTO_PIPE_TIMES = [t.strip() for t in _get("AUTO_PIPE_TIMES", "08:00,17:00").split(",") if t.strip()]
+AUTO_PIPE_TIMES = [t.strip() for t in _get("AUTO_PIPE_TIMES", "05:00,20:00").split(",") if t.strip()]
 
 
 MAX_RESULTS_PER_LEAD = _get_int("MAX_RESULTS_PER_LEAD", 10)
