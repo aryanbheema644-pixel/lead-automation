@@ -88,7 +88,7 @@ def _get_list(name: str, default: str) -> list[str]:
 
 
 # AE lead distribution (Owner column). "Tina" = Agustina.
-AE_ROUND_ROBIN = _get_list("AE_ROUND_ROBIN", "Vansh,Rahul,Agustina,Rocio")
+AE_ROUND_ROBIN = _get_list("AE_ROUND_ROBIN", "Vansh,Rahul,Agustina,Rocio,Juline")
 AE_LATAM = _get_list("AE_LATAM", "Agustina,Rocio")   # LATAM round-robin (Tina/Rocio)
 AE_PILOT = _get("AE_PILOT", "Rahul")                 # pilots (profession) -> Rahul
 
@@ -108,7 +108,7 @@ def _get_directory(name: str, default: str) -> dict[str, tuple[str, str]]:
 AE_DIRECTORY = _get_directory(
     "AE_DIRECTORY",
     "Agustina:32114373:Agustina Ortiz,Vansh:32114351:Vansh,"
-    "Rahul:32114362:Rahul Bamal,Rocio:32884736:Rocio Hernandez",
+    "Rahul:32114362:Rahul Bamal,Rocio:32884736:Rocio Hernandez,Juline:33126230:Juline",
 )
 
 # Weekly GTM report: this week's and last week's channel and AE SQL cells are
