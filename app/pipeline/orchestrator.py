@@ -77,12 +77,40 @@ def _name_tokens(s: str) -> set[str]:
     return {t for t in re.findall(r"[a-z]+", s) if len(t) >= 3}
 
 
-def _same_name(lead_name: str, raw: dict) -> bool:
-    """The scraped profile carries the lead's name (any name part; "Alex" counts
-    for "Alexei"). Used to check a LinkedIn URL the lead typed in themselves."""
+def _clear_name_match(lead_name: str, raw: dict) -> bool:
+    """Every part of the lead's name (2+ parts) is on the profile; a shared first
+    name isn't enough ("Francis Tyson Thomas" is not "Francis Turner"). A short
+    form counts from 4 letters ("Alex" for "Alexei", but not "Ali" for "Alice")."""
     mine = _name_tokens(lead_name)
     theirs = _name_tokens(f"{raw.get('firstName', '')} {raw.get('lastName', '')}")
-    return any(a.startswith(b) or b.startswith(a) for a in mine for b in theirs)
+    def same(a: str, b: str) -> bool:
+        return a == b or (min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)))
+    return len(mine) >= 2 and all(any(same(a, b) for b in theirs) for a in mine)
+
+
+def lead_context(lead: dict) -> dict:
+    """What identifies a lead: as they filled it in, never the sheet's Name column
+    or anything else derived from the profile being checked."""
+    return {"name": lead.get("name") or "", "email": lead.get("email") or "",
+            "phone": lead.get("phone") or "", "company": lead.get("company") or "",
+            "visa": lead.get("visa") or "", "message": (lead.get("message") or "")[:1500]}
+
+
+def same_person(lead: dict, raw: dict) -> dict:
+    """Is this opened LinkedIn profile the lead's own? Clearly the same name passes;
+    otherwise the LLM judges (names are messy). same: True | False | "unsure"."""
+    if _clear_name_match(lead.get("name", ""), raw):
+        return {"same": True, "via": "name", "reason": "", "confidence": 1.0}
+    try:
+        j = llm.same_person(lead, _format_profile(raw))
+    except Exception as e:  # noqa: BLE001 — no judgement isn't a yes
+        j = {"same_person": "unsure", "confidence": 0, "reason": f"LLM check failed: {str(e)[:120]}"}
+    same = "unsure"
+    if j["same_person"] is True and j["confidence"] >= 0.7:
+        same = True
+    elif j["same_person"] is False and j["confidence"] >= 0.6:
+        same = False
+    return {"same": same, "via": "llm", "reason": j["reason"], "confidence": j["confidence"]}
 
 
 def _cache_on_candidate(candidates: list[dict], chosen: dict, summary: dict | None) -> None:
@@ -167,8 +195,9 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
     try:
         # Fast path: the lead typed in their own LinkedIn URL. Leads mistype
         # these (or make one up), so it's only used as-is when the profile
-        # exists AND carries the lead's name; otherwise the lead is searched for
-        # like any other, the typed profile (if it exists) being one candidate.
+        # exists AND is the lead's own; otherwise the lead is searched for like
+        # any other. A profile judged someone else's is out; an unsure one stays
+        # a candidate for the matcher.
         provided = _canon((lead.get("linkedin") or "").strip())
         provided_raw, provided_note = None, ""
         if provided.startswith("http") and is_linkedin(provided):
@@ -177,10 +206,16 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
             if not provided_raw:
                 provided_note = (f"The LinkedIn URL the lead typed in ({provided}) doesn't "
                                  "lead to a profile, so the lead was searched for. ")
-            elif not _same_name(lead.get("name", ""), provided_raw):
+            else:
                 who = f"{provided_raw.get('firstName', '')} {provided_raw.get('lastName', '')}".strip()
-                provided_note = (f"The LinkedIn URL the lead typed in ({provided}) belongs to "
-                                 f"{who or 'someone else'}, so the lead was searched for. ")
+                verdict = same_person(lead_context(lead), provided_raw)
+                if verdict["same"] is False:
+                    provided_note = (f"The LinkedIn URL the lead typed in ({provided}) belongs to "
+                                     f"{who or 'someone else'}, so the lead was searched for. ")
+                    provided_raw = None
+                elif verdict["same"] is not True:  # unsure
+                    provided_note = (f"The LinkedIn URL the lead typed in ({provided}) may not be "
+                                     f"theirs (it's {who or 'unnamed'}), so the lead was searched for. ")
         if provided_raw and not provided_note:
             chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
             screen_summary = _screen_lead(lead_id, chosen, raw=provided_raw)
@@ -194,7 +229,7 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
                 lead_id, status="accepted", stage="done", confidence=None,
                 candidates=candidates,
                 chosen=chosen, screening=screen_summary, screened=1, owner=owner,
-                reasoning="LinkedIn URL provided by the lead — checked: the profile exists and has the lead's name.",
+                reasoning="LinkedIn URL provided by the lead — checked: the profile exists and is the lead's own.",
                 error=None,
             )
             if not recheck:
@@ -259,12 +294,12 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
         # Merge with dedup, preserving priority order:
         # Apify search (reliable, has data) > Tavily-found LinkedIn.
         seen, li_ordered = set(), []
-        if provided_raw:                               # typed in, but another name: let the matcher judge
+        if provided_raw:                               # typed in, but unsure: let the matcher judge
             seen.add(provided.rstrip("/").lower())
             li_ordered.append({"url": provided, "title": "LinkedIn URL typed in by the lead",
                                "snippet": "", "raw_content": _format_profile(provided_raw),
                                "_source": "apify_search"})     # already scraped: reuse it
-        elif provided:                                 # typed in, but no such profile
+        elif provided:                                 # typed in, but no such profile or someone else's
             seen.add(provided.rstrip("/").lower())
         for r in lane_li + gen_li:
             key = _canon(r["url"]).rstrip("/").lower()

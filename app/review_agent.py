@@ -1,8 +1,9 @@
 """LinkedIn review agent: opens every LinkedIn link in the Pipedrive sheet and
 checks it's the lead's own profile, so nobody has to click through them by hand.
 
-A link is good only when the page opens AND is the lead's own: the names clearly
-match, or else the LLM judges it the same person (names in the sheet are messy).
+A link is good only when the page opens AND is the lead's own, judged against
+what the lead filled in (orchestrator.same_person): the names clearly match, or
+else the LLM judges it the same person.
 When the LLM is unsure nothing changes and the row is listed for a person. Links
 that aren't LinkedIn profiles (a personal site, Instagram, …) are skipped. A
 bad link (dead, someone else's) gets its lead re-checked
@@ -22,8 +23,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import db, sheets
-from .pipeline import llm, orchestrator
-from .pipeline.linkedin import _format_profile, canonical_linkedin, fetch_linkedin_raw
+from .pipeline import orchestrator
+from .pipeline.linkedin import canonical_linkedin, fetch_linkedin_raw
 
 _lock = threading.Lock()
 
@@ -47,39 +48,29 @@ def is_running() -> bool:
     return _lock.locked()
 
 
-def _clear_match(name: str, raw: dict) -> bool:
-    """Fast pre-check: every part of the lead's name (2+ parts) is on the profile.
-    Anything less — one name, a nickname, an email in the name field — goes to the LLM."""
-    mine = orchestrator._name_tokens(name)
-    theirs = orchestrator._name_tokens(f"{raw.get('firstName', '')} {raw.get('lastName', '')}")
-    return len(mine) >= 2 and all(any(a.startswith(b) or b.startswith(a) for b in theirs) for a in mine)
-
-
-def _lead_ctx(r: list, cell) -> dict:
-    """What the LLM gets from the sheet row (the email's local part and the phone's
-    country code often hold the real name and country)."""
-    return {"name": cell(r, "name"), "email": cell(r, "email"), "phone": cell(r, "number"),
+def _lead_ctx(lead: dict | None, r: list, cell) -> dict:
+    """Who the row is meant to be. The sheet's Name column holds the profile's name
+    once a profile is chosen, so it proves nothing: use what the lead filled in.
+    A row with no lead in LeadSearch has no reliable name; the LLM gets the rest."""
+    if lead:
+        return orchestrator.lead_context(lead)
+    return {"name": "", "email": cell(r, "email"), "phone": cell(r, "number"),
             "visa": cell(r, "visa intrested in"), "message": cell(r, "message")[:1500]}
 
 
 def _check(url: str, lead: dict) -> dict:
     """Open one link and judge it. verdict: good | bad | unsure; why: dead |
-    other_person | unsure. The page must open (Apify); the LLM
-    judges identity unless the names clearly match."""
+    other_person | unsure. The page must open (Apify); identity is
+    orchestrator.same_person."""
     raw = fetch_linkedin_raw(canonical_linkedin(url))
     if not raw:
         return {"verdict": "bad", "why": "dead"}
     who = f"{raw.get('firstName', '')} {raw.get('lastName', '')}".strip()
-    if _clear_match(lead.get("name", ""), raw):
-        return {"verdict": "good", "who": who}
-    try:
-        j = llm.same_person(lead, _format_profile(raw))
-    except Exception as e:  # noqa: BLE001 — no judgement = a person decides
-        j = {"same_person": "unsure", "confidence": 0, "reason": f"LLM check failed: {str(e)[:120]}"}
-    out = {"who": who, "reason": j["reason"], "confidence": j["confidence"]}
-    if j["same_person"] is True and j["confidence"] >= 0.7:
+    j = orchestrator.same_person(lead, raw)
+    out = {"who": who, "via": j["via"], "reason": j["reason"], "confidence": j["confidence"]}
+    if j["same"] is True:
         return {**out, "verdict": "good"}
-    if j["same_person"] is False and j["confidence"] >= 0.6:
+    if j["same"] is False:
         return {**out, "verdict": "bad", "why": "other_person"}
     return {**out, "verdict": "unsure", "why": "unsure"}
 
@@ -91,7 +82,7 @@ def run(only_new: bool = False, sync=None) -> dict:
     if not _lock.acquire(blocking=False):
         return status()
     rep = {"running": True, "started": time.time(), "only_new": only_new,
-           "checked": 0, "good": 0, "changed": [], "left": []}
+           "checked": 0, "good": 0, "passed": [], "changed": [], "left": []}
     db.meta_set("li_review", json.dumps(rep))
     try:
         ws, rows = sheets.open_dest()
@@ -104,6 +95,13 @@ def run(only_new: bool = False, sync=None) -> dict:
             raise sheets.SheetsError("The Pipedrive sheet has no 'Linkedin Profile URL' column")
         cell = lambda r, k: (r[ci[k]].strip() if ci[k] is not None and ci[k] < len(r) else "")
 
+        leads = {}
+        for l in db.list_leads():
+            leads.setdefault(_key(l.get("email"), l.get("phone")), []).append(l)
+        def lead_of(key: str) -> dict | None:
+            same = leads.get(key, [])
+            return next((l for l in same if l.get("status") == "accepted"), same[0] if same else None)
+
         done = json.loads(db.meta_get("li_reviewed", "{}") or "{}")
         todo = []
         for n, r in enumerate(rows[1:], start=2):
@@ -114,16 +112,14 @@ def run(only_new: bool = False, sync=None) -> dict:
                 todo.append((n, r, url, key))
 
         with ThreadPoolExecutor(4) as ex:
-            verdicts = list(ex.map(lambda t: _check(t[2], _lead_ctx(t[1], cell)), todo))
+            verdicts = list(ex.map(lambda t: _check(t[2], _lead_ctx(lead_of(t[3]), t[1], cell)), todo))
         rep["checked"] = len(todo)
 
-        leads = {}
-        for l in db.list_leads():
-            leads.setdefault(_key(l.get("email"), l.get("phone")), []).append(l)
         fixes = []                                   # sheet cells the sync won't rewrite
         for (n, r, url, key), v in zip(todo, verdicts):
             if v["verdict"] == "good":
                 rep["good"] += 1
+                rep["passed"].append({"row": n, "who": v.get("who", ""), "via": v.get("via", "")})
                 done[key] = canonical_linkedin(url)
                 continue
             item = {"row": n, "name": cell(r, "name"), "email": cell(r, "email"), "old": url,

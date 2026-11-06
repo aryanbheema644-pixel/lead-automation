@@ -29,6 +29,13 @@ def _sc(c: dict) -> float:
         return 0.0
 
 
+def _rank(c: dict) -> tuple:
+    """Score first; on a tie the profile with more on it (an empty one can match a
+    name perfectly, but it's rarely the one the person uses)."""
+    person = c.get("person") or {}
+    return _sc(c), sum(bool(person.get(k)) for k in ("role", "company", "school", "location"))
+
+
 def _opened(c: dict) -> bool:
     src = c.get("content_source")
     if c.get("source_type") == "linkedin":
@@ -48,8 +55,8 @@ def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
                                "check manually (accept as-is, or reject)."), None
 
     lis = [c for c in candidates if c.get("source_type") == "linkedin"]
-    best_li = max(lis, key=_sc) if lis else None
-    best_any = max(candidates, key=_sc)
+    best_li = max(lis, key=_rank) if lis else None
+    best_any = max(candidates, key=_rank)
 
     # 1) Confident LinkedIn wins outright — if its profile could be opened.
     if best_li and _sc(best_li) >= config.ACCEPT_THRESHOLD and _opened(best_li):
