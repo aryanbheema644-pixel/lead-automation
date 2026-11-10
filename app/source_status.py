@@ -4,8 +4,9 @@ The team keeps a "Lead Status" column on the Website Leads and Meta Leads tabs:
 a lead that went to an AE gets "In Progress". Once a lead is accepted and in the
 Pipedrive sheet (i.e. distributed), its row in its own source tab is marked.
 
-A lead's row is found by email (else phone) on the lead's date; with several
-(the same person twice that day) the first one. A cell that already holds
+A lead's row is the one it was read from: same email (else phone), closest to
+the lead's date, over every lead tab (a merged lead credited to Meta can have
+been read from a Website or WA row); with several, the first one. A cell that already holds
 anything is never overwritten. Tabs without a "Lead Status" column (the
 WhatsApp chatbot tab) are skipped. Each lead is handled once; a lead whose row
 can't be found is retried a few times, then left alone.
@@ -37,50 +38,58 @@ def mark_distributed(channel_of) -> dict:
     if not config.GOOGLE_SOURCE_SHEET_ID:
         return out
     state = _state()
+    # "ok" = handled by the row choice below. An older "done" gets one more look,
+    # so leads whose row was looked for on the wrong tab are marked now.
     pending = [l for l in db.list_leads("accepted")
-               if l.get("pushed") and l.get("origin") == "sheet" and state.get(str(l["id"])) != "done"]
+               if l.get("pushed") and l.get("origin") == "sheet" and state.get(str(l["id"])) != "ok"]
     if not pending:
         return out
     sh = sheets._client().open_by_key(config.GOOGLE_SOURCE_SHEET_ID)
-    tabs = [t.strip() for t in (config.GOOGLE_SOURCE_TAB or "").split(",") if t.strip()] \
+    titles = [t.strip() for t in (config.GOOGLE_SOURCE_TAB or "").split(",") if t.strip()] \
         or [ws.title for ws in sh.worksheets()]
-    by_channel = {}
-    for title in tabs:
-        by_channel.setdefault(channel_of(title), title)
-
-    for channel in {l.get("channel") or "" for l in pending}:
-        leads = [l for l in pending if (l.get("channel") or "") == channel]
-        title = by_channel.get(channel)
-        if not title:
-            for l in leads:
-                state[str(l["id"])] = "done"          # not from a tab we read
-            continue
+    tabs = []
+    for title in titles:
+        ch = channel_of(title)
+        if ch == title:
+            continue                                   # not a lead tab, e.g. "[Import] SQL"
         ws = sh.worksheet(title)
         values = ws.get_all_values()
         header = [_hkey(h) for h in (values[0] if values else [])]
-        if "lead status" not in header:
-            for l in leads:
-                state[str(l["id"])] = "done"          # e.g. the WhatsApp tab: nothing to mark
-            continue
-        sc = header.index("lead status")
-        dc = next((header.index(n) for n in ("date of lead", "date od lead", "timestamp") if n in header), None)
-        ec = header.index("email") if "email" in header else None
-        pc = header.index("number") if "number" in header else None
-        cells = []
-        for l in leads:
-            row = _find_row(values, l, dc, ec, pc)
-            if row is None:
-                tries = state.get(str(l["id"]), 0) + 1
-                state[str(l["id"])] = "done" if tries >= _TRIES else tries
-                out["skipped"] += 1
+        col = lambda names, _h=header: next((_h.index(n) for n in names if n in _h), None)
+        tabs.append({"ws": ws, "values": values, "channel": ch, "sc": col(("lead status",)),
+                     "dc": col(("date of lead", "date od lead", "timestamp")),
+                     "ec": col(("email",)), "pc": col(("number",)), "cells": []})
+
+    for l in pending:
+        ch = l.get("channel") or ""
+        # The row it was read from: the closest date over every lead tab (ties:
+        # its channel's tab). A merged lead is credited to the higher channel but
+        # keeps the row it was read from, which can be on another tab.
+        hit = None
+        for t in tabs:
+            if t["ec"] is None and t["pc"] is None:
                 continue
-            cur = values[row][sc] if sc < len(values[row]) else ""
+            g = _find_row_gap(t["values"], l, t["dc"], t["ec"], t["pc"])
+            if g and (hit is None or (g[0], t["channel"] != ch) < (hit[2], hit[0]["channel"] != ch)):
+                hit = (t, g[1], g[0])
+        if hit is None:
+            tries = (state.get(str(l["id"])) if isinstance(state.get(str(l["id"])), int) else 0) + 1
+            state[str(l["id"])] = "ok" if tries >= _TRIES else tries
+            out["skipped"] += 1
+            continue
+        t, row, _ = hit
+        sc = t["sc"]
+        if sc is not None:                             # the WhatsApp tab has no status column
+            cur = t["values"][row][sc] if sc < len(t["values"][row]) else ""
             if not cur.strip():
-                cells.append({"range": rowcol_to_a1(row + 1, sc + 1), "values": [[STATUS]]})
-            state[str(l["id"])] = "done"
-        if cells:
-            ws.batch_update(cells, value_input_option="USER_ENTERED")
-            out["marked"] += len(cells)
+                t["cells"].append({"range": rowcol_to_a1(row + 1, sc + 1), "values": [[STATUS]]})
+                t["values"][row] += [""] * (sc + 1 - len(t["values"][row]))
+                t["values"][row][sc] = STATUS
+        state[str(l["id"])] = "ok"
+    for t in tabs:
+        if t["cells"]:
+            t["ws"].batch_update(t["cells"], value_input_option="USER_ENTERED")
+            out["marked"] += len(t["cells"])
     db.meta_set("src_marked", json.dumps(state))
     return out
 
