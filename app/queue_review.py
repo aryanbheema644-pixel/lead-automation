@@ -5,12 +5,13 @@ review_rules.md (the team adds to that list over time):
 
 - reject: the lead gave a link that has nothing to do with them (someone
   else's profile, an unrelated site, junk), or the lead is spam / a test;
-- accept: the profile chosen for the lead is theirs and its score is good
-  (at least REVIEW_AGENT_ACCEPT_SCORE): it gets its AE like a reviewer's Accept;
+- accept: the chosen profile's score is good (at least REVIEW_AGENT_ACCEPT_SCORE,
+  0.60), with no bad link and not plainly someone else: it gets its AE like a
+  reviewer's Accept;
 - leave: anything unclear stays in review for a person.
 
-The LLM only proposes; the code accepts only with a good score and a confident
-call, and rejects only on a confident call. Each lead is decided once per
+The LLM only proposes; the code accepts on the score (unless the LLM sees a bad
+link, spam or plainly another person) and rejects only on a confident call. Each lead is decided once per
 version of the rules (meta "rq_done": lead id -> rules hash), so adding a rule
 makes it look at the leads still in review again. Every decision is logged
 (meta "rq_log") with the reason.
@@ -52,15 +53,20 @@ link is NOT a bad link.
 Then "spam": true only if the whole lead is plainly fake or a test: a
 random-letter name and gibberish details, keyboard mashing, "test test".
 
+Then "other_person": true only if the chosen profile is clearly a DIFFERENT
+person from the lead (wrong name, or details that plainly contradict theirs).
+Not being able to fully confirm it is not "other_person".
+
 Then the verdict:
 - "reject": the team's rules say to reject it (a bad link, or spam).
-- "accept": the chosen profile is clearly the lead's own (name and details line
-  up, no sign it is someone else) and nothing in the rules says otherwise.
-- "leave": anything else, or when you're not sure. When in doubt, leave.
+- "accept": nothing in the rules says to reject it and the chosen profile could
+  well be theirs.
+- "leave": anything else.
 
 Reply with JSON only:
 {"given_link": "theirs" | "someone_else" | "unrelated" | "not_a_link" | "none" | "unclear",
  "spam": true | false,
+ "other_person": true | false,
  "verdict": "reject" | "accept" | "leave",
  "confidence": 0-1 (how sure you are of the verdict),
  "reason": "one or two plain sentences a sales manager would understand"}"""
@@ -132,12 +138,14 @@ def judge(lead: dict) -> dict:
         action = "reject"
     elif verdict == "reject":
         reason = "Not rejected: only a link that isn't theirs, or a spam lead, is. " + reason
-    elif verdict == "accept" and conf >= 0.7 and lead.get("chosen") \
-            and score >= config.REVIEW_AGENT_ACCEPT_SCORE:
+    # The team's call: a good score (REVIEW_AGENT_ACCEPT_SCORE, 0.60) is enough
+    # to accept, unless it has a bad link, is spam, or the profile is plainly
+    # someone else.
+    elif score >= config.REVIEW_AGENT_ACCEPT_SCORE and lead.get("chosen") \
+            and not bad_link and not spam and j.get("other_person") is not True:
         action = "accept"
-    elif verdict == "accept":
-        reason = (f"Looks like theirs, but the score ({score:.2f}) or the call isn't strong "
-                  f"enough to accept without a person. " + reason)
+    elif j.get("other_person") is True:
+        reason = "Not accepted: the chosen profile looks like someone else. " + reason
     return {"action": action, "verdict": verdict, "given_link": given, "spam": spam,
             "confidence": conf, "score": score, "reason": reason}
 
