@@ -49,7 +49,7 @@ _UNOPENED = "The page couldn't be opened, so this needs checking. "
 def decide(candidates: list[dict]) -> tuple[str, float, str, Optional[dict]]:
     # Not finding someone online isn't a reason to drop the lead — sparse leads
     # (just a name, email and phone) often have no findable profile. Those go to
-    # review; only a human rejects a lead.
+    # review, where a person or the review agent (queue_review.py) decides.
     if not candidates:
         return "review", 0.0, ("No online profile found from the details given — "
                                "check manually (accept as-is, or reject)."), None

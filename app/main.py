@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, dedupe, gtm, pipedrive, review_agent, sheets, source_status, source_writeback
+from . import config, db, dedupe, gtm, pipedrive, queue_review, review_agent, sheets, source_status, source_writeback
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -223,6 +223,15 @@ def _run_cycle(trigger: str) -> dict:
             orchestrator.start_worker()
             while orchestrator.is_running() and not _scheduler_stop.is_set():
                 time.sleep(1)
+            # The review agent decides the leads left in review (rules:
+            # review_rules.md): bad link / spam -> rejected, theirs with a good
+            # score -> accepted (gets its AE), the rest stay for a person.
+            try:
+                rq = queue_review.run()
+                if rq["accepted"] or rq["rejected"]:
+                    result["review_agent"] = {k: rq[k] for k in ("accepted", "rejected", "left")}
+            except Exception as e:  # noqa: BLE001 — must not stop the cycle
+                result["review_agent_issue"] = str(e)[:200]
             if config.GOOGLE_DEST_SHEET_ID:
                 # Push paused = add nothing new, but still update rows already
                 # in the sheet (merges, AE changes, …). Also updates the GTM report.
@@ -1439,6 +1448,21 @@ def lead_detail(lead_id: int) -> JSONResponse:
     if not lead:
         raise HTTPException(404, "Lead not found")
     return JSONResponse(lead)
+
+
+@app.get("/api/review-agent")
+def review_agent_log() -> JSONResponse:
+    """What the review agent decided on the review queue, and the rules it follows."""
+    return JSONResponse(queue_review.last())
+
+
+@app.post("/api/review-agent/run")
+def review_agent_run(dry: bool = False) -> JSONResponse:
+    """Decide the leads in review now (dry=true: only show what it would do)."""
+    out = queue_review.run(live=not dry, only_new=not dry)
+    if not dry and (out["accepted"] or out["rejected"]):
+        _sync_soon()
+    return JSONResponse(out)
 
 
 @app.post("/api/leads/{lead_id}/accept")

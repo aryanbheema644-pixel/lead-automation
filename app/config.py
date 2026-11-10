@@ -76,6 +76,11 @@ APIFY_LINKEDIN_SEARCH_MAXITEMS = _get_int("APIFY_LINKEDIN_SEARCH_MAXITEMS", 5)
 # Pipeline tuning
 ACCEPT_THRESHOLD = _get_float("ACCEPT_THRESHOLD", 0.75)
 REVIEW_THRESHOLD = _get_float("REVIEW_THRESHOLD", 0.45)
+# The review agent (queue_review.py) decides the leads left in review: rejects
+# bad-link / spam leads, accepts those whose profile is theirs with at least
+# this score, leaves the rest for a person. Rules: app/review_rules.md.
+REVIEW_AGENT_QUEUE = (_get("REVIEW_AGENT_QUEUE") or "1").strip().lower() not in ("0", "false", "off", "no")
+REVIEW_AGENT_ACCEPT_SCORE = _get_float("REVIEW_AGENT_ACCEPT_SCORE", 0.6)
 # LinkedIn gets ranking priority: a confident LinkedIn match (score >= review
 # threshold) is ordered above non-LinkedIn candidates, even on a near-tie. This
 # is ordering-only; the displayed score is unchanged. Wrong-person LinkedIn hits
