@@ -94,7 +94,7 @@ def _get_list(name: str, default: str) -> list[str]:
 
 # AE lead distribution (Owner column). "Tina" = Agustina.
 AE_ROUND_ROBIN = _get_list("AE_ROUND_ROBIN", "Vansh,Rahul,Agustina,Rocio,Juline")
-AE_LATAM = _get_list("AE_LATAM", "Agustina,Rocio")   # LATAM round-robin (Tina/Rocio)
+AE_LATAM = _get_list("AE_LATAM", "Agustina,Rocio,Juline")   # LATAM round-robin (Tina/Rocio/Juline)
 AE_PILOT = _get("AE_PILOT", "Rahul")                 # pilots (profession) -> Rahul
 
 

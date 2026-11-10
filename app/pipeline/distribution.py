@@ -1,7 +1,7 @@
 """AE lead distribution (the Owner column).
 
 Rules (priority order):
-  1. LATAM lead (by country)      -> AE_LATAM  (Agustina/Rocio)
+  1. LATAM lead (by country)      -> AE_LATAM  (Agustina/Rocio/Juline)
   2. Pilot by profession          -> AE_PILOT  (Rahul)
   3. Everyone else                -> AE_ROUND_ROBIN
 LATAM wins over pilot when both apply.
