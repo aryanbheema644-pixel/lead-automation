@@ -88,8 +88,15 @@ def mark_distributed(channel_of) -> dict:
 def _find_row(values: list[list[str]], lead: dict, dc, ec, pc) -> int | None:
     """0-based index of the lead's row: same email or phone, on the lead's date
     (else the closest row within 3 days of it)."""
+    best = _find_row_gap(values, lead, dc, ec, pc)
+    return best[1] if best else None
+
+
+def _find_row_gap(values: list[list[str]], lead: dict, dc, ec, pc) -> tuple[int, int] | None:
+    """Like _find_row, but (days off the lead's date, index), to compare tabs."""
     email = (lead.get("email") or "").strip().lower()
     phone = _digits(lead.get("phone"))[-9:]
+    undated = not (lead.get("lead_date") or "").strip()
     day = _parse_date(lead.get("lead_date") or "") or \
         dt.datetime.utcfromtimestamp(lead.get("created_at") or 0).date()
     best = None
@@ -100,6 +107,8 @@ def _find_row(values: list[list[str]], lead: dict, dc, ec, pc) -> int | None:
             continue
         d = _parse_date(cell(dc)) if dc is not None else None
         gap = min((abs((x - day).days) for x in (d, d and _swapped(d)) if x), default=99)
+        if undated and not cell(dc):
+            gap = 3                                   # a lead read from a row with no date: that row
         if gap <= 3 and (best is None or gap < best[0]):
             best = (gap, i)                           # the first row on the closest day
-    return best[1] if best else None
+    return best

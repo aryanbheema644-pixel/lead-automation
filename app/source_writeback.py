@@ -25,7 +25,7 @@ from gspread.utils import rowcol_to_a1
 
 from . import config, db, sheets
 from .gtm import _hkey
-from .source_status import _find_row
+from .source_status import _find_row_gap
 
 # Pipedrive-sheet field -> header(s) it goes under in a source tab.
 _COLUMNS = {
@@ -89,58 +89,77 @@ def sync(channel_of, fields_of, live: bool = True) -> dict:
     sh = sheets._client().open_by_key(config.GOOGLE_SOURCE_SHEET_ID)
     tabs = [t.strip() for t in (config.GOOGLE_SOURCE_TAB or "").split(",") if t.strip()] \
         or [ws.title for ws in sh.worksheets()]
-    by_channel = {}
+    # Every tab, read once (see the row choice below).
+    sheet_tabs = []
     for title in tabs:
-        by_channel.setdefault(channel_of(title), title)
-    log = []
-    for channel in {l.get("channel") or "" for l in leads}:
-        title = by_channel.get(channel)
-        if not title:
-            continue
         ws = sh.worksheet(title)
         values = ws.get_all_values()
         if not values:
             continue
         header = [_hkey(h) for h in values[0]]
-        col = lambda names: next((header.index(n) for n in names if n in header), None)
-        dc = col(("date of lead", "date od lead", "timestamp"))
+        col = lambda names, _h=header: next((_h.index(n) for n in names if n in _h), None)
         ec, pc = col(("email",)), col(("number",))
-        targets = {f: c for f, names in _COLUMNS.items() if (c := col(names)) is not None}
-        cells = []
-        for l in (l for l in leads if (l.get("channel") or "") == channel):
-            row = _find_row(values, l, dc, ec, pc)
-            if row is None:
-                out["not_found"] += 1
+        if ec is None and pc is None:
+            continue
+        sheet_tabs.append({
+            "title": title, "ws": ws, "values": values, "channel": channel_of(title),
+            "lead_tab": channel_of(title) != title,
+            "dc": col(("date of lead", "date od lead", "timestamp")), "ec": ec, "pc": pc,
+            "targets": {f: c for f, names in _COLUMNS.items() if (c := col(names)) is not None},
+            "cells": [],
+        })
+    log = []
+    for l in leads:
+        ch = l.get("channel") or ""
+        # The row it was read from: the closest date over every lead tab; on a
+        # tie, the lead's channel tab. A merged lead keeps the row it was read
+        # from (e.g. a WA chatbot row) while it is credited to a higher channel
+        # (Meta), so that row is not always on its channel's tab.
+        hit = None
+        for t in sheet_tabs:
+            if not (t["channel"] == ch or t["lead_tab"]):
+                continue                     # never e.g. "[Import] SQL" or "AE feedback"
+            g = _find_row_gap(t["values"], l, t["dc"], t["ec"], t["pc"])
+            if g and (hit is None or (g[0], t["channel"] != ch) < (hit[2], hit[0]["channel"] != ch)):
+                hit = (t, g[1], g[0])
+        if hit is None:
+            out["not_found"] += 1
+            continue
+        t, row, _ = hit
+        values, title = t["values"], t["title"]
+        f = fields_of(l)
+        last = state.get(str(l["id"]), {})
+        changed = []
+        for field, c in t["targets"].items():
+            new = f.get(field, "")
+            if field == "name":
+                new = _clean_name(new)
+            cur = values[row][c].strip() if c < len(values[row]) else ""
+            # What was written is remembered per tab (plain key = the channel's tab,
+            # as before), so a row on another tab is still written once.
+            key = field if t["channel"] == ch else f"{title}|{field}"
+            if key in last and last[key] == new:
+                continue                         # already written; a later hand edit stays
+            if new in _SKIP_VALUES.get(field, ()) or (not new and field != "linkedin profile url"):
+                continue                         # nothing clean to write (a cleared link is)
+            if field == "name" and (not _better_name(new, cur) or not (l.get("email") or l.get("phone"))):
                 continue
-            f = fields_of(l)
-            last = state.get(str(l["id"]), {})
-            changed = []
-            for field, c in targets.items():
-                new = f.get(field, "")
-                if field == "name":
-                    new = _clean_name(new)
-                cur = values[row][c].strip() if c < len(values[row]) else ""
-                if field in last and last[field] == new:
-                    continue                         # already written; a later hand edit stays
-                if new in _SKIP_VALUES.get(field, ()) or (not new and field != "linkedin profile url"):
-                    continue                         # nothing clean to write (a cleared link is)
-                if field == "name" and (not _better_name(new, cur) or not (l.get("email") or l.get("phone"))):
-                    continue
-                if new == cur:
-                    last[field] = new
-                    continue
-                cells.append({"range": rowcol_to_a1(row + 1, c + 1), "values": [[new]]})
-                changed.append({"field": field, "old": cur, "new": new})
-                last[field] = new
-            if changed:
-                out["rows"] += 1
-                out["plan"].append({"lead": l["id"], "name": f.get("name"), "tab": title,
-                                    "row": row + 1, "changes": changed})
-                log += [{"at": time.time(), "lead": l["id"], "tab": title, "row": row + 1, **ch} for ch in changed]
-            state[str(l["id"])] = last
-        if cells and live:
-            ws.batch_update(cells, value_input_option="RAW")
-        out["written"] += len(cells)
+            if new == cur:
+                last[key] = new
+                continue
+            t["cells"].append({"range": rowcol_to_a1(row + 1, c + 1), "values": [[new]]})
+            changed.append({"field": field, "old": cur, "new": new})
+            last[key] = new
+        if changed:
+            out["rows"] += 1
+            out["plan"].append({"lead": l["id"], "name": f.get("name"), "tab": title,
+                                "row": row + 1, "changes": changed})
+            log += [{"at": time.time(), "lead": l["id"], "tab": title, "row": row + 1, **ch_} for ch_ in changed]
+        state[str(l["id"])] = last
+    for t in sheet_tabs:
+        if t["cells"] and live:
+            t["ws"].batch_update(t["cells"], value_input_option="RAW")
+        out["written"] += len(t["cells"])
     if live:
         db.meta_set("src_wb", json.dumps(state))
         if log:
