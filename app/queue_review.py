@@ -167,7 +167,8 @@ def run(live: bool = True, only_new: bool = True) -> dict:
                     db.update_lead(lead["id"], status="rejected", rejected_at=time.time(),
                                    reasoning="Rejected by review agent: " + d["reason"],
                                    **({} if lead.get("pushed") else {"owner": None}))
-                done[str(lead["id"])] = h
+                if d.get("verdict"):                  # no answer: try again next cycle
+                    done[str(lead["id"])] = h
                 log.insert(0, {"at": time.time(), "lead": lead["id"], "name": lead.get("name"), **d})
             out[{"accept": "accepted", "reject": "rejected"}.get(d["action"], "left")] += 1
         if live:
