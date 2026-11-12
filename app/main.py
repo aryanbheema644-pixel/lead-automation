@@ -216,6 +216,18 @@ def _next_run() -> float:
         return 0.0
 
 
+def _free_memory() -> None:
+    """Hand memory back after a cycle (sheet reads, scraped profiles): Python
+    keeps freed memory otherwise, and the server creeps up to its limit."""
+    import ctypes
+    import gc
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)     # Linux (Render); no-op elsewhere
+    except (OSError, AttributeError):
+        pass
+
+
 def _run_cycle(trigger: str) -> dict:
     """One automation cycle. Never raises; the outcome is recorded for the UI."""
     result: dict = {"trigger": trigger, "started": time.time()}
@@ -266,6 +278,7 @@ def _run_cycle(trigger: str) -> dict:
         except Exception as e:  # noqa: BLE001 — never let the loop die; show it instead
             result["error"] = str(e)[:300]
         finally:
+            _free_memory()
             result["finished"] = time.time()
             db.meta_set("sched_last_run", json.dumps(result))
             db.meta_set("sched_running", "0")
@@ -1453,9 +1466,27 @@ def analytics() -> JSONResponse:
     return JSONResponse(db.analytics())
 
 
+_LIST_DROP = ("extracted", "queries", "pushed_row")
+
+
+def _slim(l: dict) -> dict:
+    """A lead as the list needs it: the page polls this every 2 seconds during a
+    cycle, and the full candidates (scraped pages) made it ~3.5 MB a call, enough
+    to push the server past its memory limit. The drawer loads the full lead."""
+    out = {k: v for k, v in l.items() if k not in _LIST_DROP}
+    c = (l.get("candidates") or [None])[0]
+    out["candidates"] = [{"url": c.get("url"), "source_type": c.get("source_type"),
+                          "score": c.get("score")}] if isinstance(c, dict) else []
+    ch = l.get("chosen")
+    if isinstance(ch, dict):
+        out["chosen"] = {k: ch.get(k) for k in ("url", "source_type", "score")}
+    return out
+
+
 @app.get("/api/leads")
-def leads(status: str = "all") -> JSONResponse:
-    return JSONResponse({"leads": db.list_leads(status)})
+def leads(status: str = "all", full: bool = False) -> JSONResponse:
+    rows = db.list_leads(status)
+    return JSONResponse({"leads": rows if full else [_slim(l) for l in rows]})
 
 
 @app.get("/api/leads/{lead_id}")
