@@ -409,9 +409,46 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
         if recheck:                            # leave a distributed lead as it was
             db.update_lead(lead_id, stage="done", error=f"re-check failed: {e}")
         else:
-            db.update_lead(lead_id, status="error", stage="failed", error=str(e))
+            msg = str(e)
+            if _RETRYABLE.search(msg):
+                msg += " — will be tried again automatically within the hour."
+            db.update_lead(lead_id, status="error", stage="failed", error=msg)
     finally:
         _rechecking.discard(lead_id)
+
+
+# A lead that failed only because a service was down (Apify, OpenRouter out of
+# credit / rate-limited / not answering) is tried again on its own: once an hour,
+# for up to two days, then it's left in error for a person.
+_RETRYABLE = re.compile(r"LinkedIn checker \(Apify\)|OpenRouter (?:40[28]|429|5\d\d)|"
+                        r"OpenRouter request failed|empty reply|Unexpected OpenRouter response|"
+                        r"timed? ?out|Timeout", re.I)
+_RETRY_EVERY = 3600
+_RETRY_MAX = 48
+
+
+def requeue_failed(now: float | None = None) -> list[int]:
+    """Put back in the queue the leads in error whose failure was a service
+    outage, at most once an hour each. Returns the ids requeued."""
+    import json
+    now = now or time.time()
+    try:
+        tries = json.loads(db.meta_get("retry_failed", "{}") or "{}")
+    except ValueError:
+        tries = {}
+    out = []
+    for l in db.list_leads("error"):
+        if not _RETRYABLE.search(l.get("error") or ""):
+            continue
+        t = tries.get(str(l["id"])) or {"n": 0, "at": None}
+        if t["n"] >= _RETRY_MAX or (t["at"] is not None and now - t["at"] < _RETRY_EVERY):
+            continue
+        tries[str(l["id"])] = {"n": t["n"] + 1, "at": now}
+        db.update_lead(l["id"], status="queued", stage=None)
+        out.append(l["id"])
+    if out:
+        db.meta_set("retry_failed", json.dumps(tries))
+    return out
 
 
 def _drain_queue() -> None:

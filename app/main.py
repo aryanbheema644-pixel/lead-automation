@@ -49,6 +49,17 @@ def _startup() -> None:
     if db.meta_get("visa_fix_done") != "1" and config.GOOGLE_SOURCE_SHEET_ID:
         threading.Thread(target=_fix_old_visas, daemon=True).start()
     _fix_lead_dates()
+    if db.meta_get("apify_outage_requeue_v1") != "1":
+        # 12 Nov 2026: Apify stopped answering and every typed-in LinkedIn read as
+        # "doesn't lead to a profile". Those leads go back through as outage
+        # failures, so requeue_failed runs them again once Apify answers.
+        since = 1794421800          # 2026-11-12 00:00 IST
+        for l in db.list_leads("review"):
+            if (l.get("created_at") or 0) >= since and "doesn't lead to a profile" in (l.get("reasoning") or ""):
+                db.update_lead(l["id"], status="error", stage="failed",
+                               error="LinkedIn checker (Apify) not answering on 12 Nov — "
+                                     "will be tried again automatically within the hour.")
+        db.meta_set("apify_outage_requeue_v1", "1")
     db.relabel_channel("Upload", _NO_CHANNEL)
     dedupe.backfill_prior_status()
     if db.meta_get("dedupe_scanned") != "1":
@@ -218,6 +229,11 @@ def _run_cycle(trigger: str) -> dict:
                     result["baselined"] = _baseline()["baselined"]
                 else:
                     result["pulled"] = _pull_new(limit=config.SCHEDULER_MAX_PER_CYCLE)["inserted"]
+            # Leads that failed because a service was down (Apify, OpenRouter)
+            # go back in the queue on their own.
+            retried = orchestrator.requeue_failed()
+            if retried:
+                result["retried"] = retried
             # Process everything queued, and wait for it, so this cycle pushes
             # its own results instead of the next one.
             orchestrator.start_worker()

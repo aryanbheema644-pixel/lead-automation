@@ -144,26 +144,10 @@ def _flatten(obj, depth: int = 0) -> str:
 def fetch_linkedin(url: str) -> str:
     if not (config.APIFY_API_TOKEN and config.APIFY_LINKEDIN_ACTOR):
         return ""
-    actor = config.APIFY_LINKEDIN_ACTOR.replace("/", "~")
-    endpoint = (
-        f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
-        f"?token={config.APIFY_API_TOKEN}"
-    )
-    payload = _build_input(url)
-    try:
-        with httpx.Client(timeout=180) as client:
-            r = client.post(endpoint, json=payload)
-    except httpx.HTTPError:
-        return ""
-    if r.status_code not in (200, 201):
-        return ""
-    try:
-        items = r.json()
-    except json.JSONDecodeError:
-        return ""
+    items = _run_actor(config.APIFY_LINKEDIN_ACTOR, _build_input(url), timeout=180)
     if not items:
         return ""
-    return _format_profile(items[0] if isinstance(items, list) else items)
+    return _format_profile(items[0])
 
 
 def fetch_linkedin_raw(url: str, retries: int = 1):
@@ -183,8 +167,14 @@ def fetch_linkedin_raw(url: str, retries: int = 1):
     return None
 
 
+class ApifyDown(RuntimeError):
+    """Apify itself didn't answer (out of credit, bad token, timeout, outage).
+    Not the same as "no such profile": the lead waits and is tried again."""
+
+
 def _run_actor(actor: str, payload: dict, timeout: int = 240) -> list:
-    """Run an Apify actor synchronously and return dataset items."""
+    """Run an Apify actor synchronously and return dataset items. Raises
+    ApifyDown when Apify fails, so a failure never reads as "no profile"."""
     actor = actor.replace("/", "~")
     endpoint = (
         f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
@@ -193,14 +183,18 @@ def _run_actor(actor: str, payload: dict, timeout: int = 240) -> list:
     try:
         with httpx.Client(timeout=timeout) as client:
             r = client.post(endpoint, json=payload)
-    except httpx.HTTPError:
-        return []
+    except httpx.HTTPError as e:
+        raise ApifyDown(f"LinkedIn checker (Apify) not answering: {type(e).__name__}") from e
     if r.status_code not in (200, 201):
-        return []
+        try:
+            msg = (r.json().get("error") or {}).get("message") or r.text
+        except (ValueError, AttributeError):
+            msg = r.text
+        raise ApifyDown(f"LinkedIn checker (Apify) not answering: HTTP {r.status_code} {str(msg)[:160]}")
     try:
         items = r.json()
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise ApifyDown("LinkedIn checker (Apify) gave an unreadable answer") from e
     return items if isinstance(items, list) else [items]
 
 
