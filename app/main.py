@@ -1674,6 +1674,18 @@ def _safe(fn) -> None:
         pass
 
 
+@app.get("/api/aes/turns")
+def ae_turns() -> JSONResponse:
+    """How far each AE is ahead in the rotation (0 = next in line)."""
+    return JSONResponse(distribution.turns())
+
+
+@app.post("/api/aes/turns/reset")
+def ae_turns_reset() -> JSONResponse:
+    """Put every AE level in the rotation from the next lead on."""
+    return JSONResponse(distribution.reset_turns())
+
+
 @app.post("/api/aes/availability")
 def ae_availability(body: dict) -> JSONResponse:
     """Tick/untick an AE in "Team on duty". Unticked = on leave: gets no new

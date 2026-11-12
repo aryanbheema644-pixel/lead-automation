@@ -132,6 +132,24 @@ def _take_turn(allowed: list[str]) -> str:
         return pick
 
 
+def turns() -> dict:
+    """The rotation's state: each AE's turns ahead of the lowest, and the last pick."""
+    try:
+        return json.loads(db.meta_get("ae_turns", "{}") or "{}")
+    except ValueError:
+        return {}
+
+
+def reset_turns() -> dict:
+    """Everyone level from the next lead on (the team's call, e.g. after an AE
+    joined a rule and the others were owed leads). Keeps the rotation order."""
+    order = list(dict.fromkeys(config.AE_ROUND_ROBIN + config.AE_LATAM + [config.AE_PILOT]))
+    with _turns_lock:
+        state = {"turns": {n: 0 for n in order if n}, "last": turns().get("last", "")}
+        db.meta_set("ae_turns", json.dumps(state))
+    return state
+
+
 def move_turn(old: str, new: str) -> None:
     """A lead was reassigned by hand: the turn goes with it."""
     with _turns_lock:
