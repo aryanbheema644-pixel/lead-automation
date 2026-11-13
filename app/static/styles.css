@@ -451,3 +451,11 @@ a.svc-pill:hover { border-color: var(--accent-2); background: var(--chip); }
 .svc-alert { padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .svc-alert pre { white-space: pre-wrap; margin: 4px 0 0; font-size: 12.5px; font-family: inherit; }
 @media (max-width: 980px) { .svc-bar { display: none; } }
+
+/* Review agent's suggestion on a review card (the reviewer decides) */
+.rc-agent { font-size: 12.5px; line-height: 1.4; padding: 7px 10px; border-radius: 9px; background: var(--panel-2); border-left: 3px solid var(--faint); color: var(--muted); margin-top: 6px; }
+.rc-agent b { color: var(--text); }
+.rc-agent.accept { border-left-color: var(--good); } .rc-agent.accept b { color: var(--good); }
+.rc-agent.reject { border-left-color: var(--bad); } .rc-agent.reject b { color: var(--bad); }
+.rc-agent.unsure { border-left-color: var(--warn); } .rc-agent.unsure b { color: var(--warn); }
+.rc-agent-k { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; color: var(--faint); }

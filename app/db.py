@@ -12,7 +12,7 @@ from .config import DB_PATH
 _lock = threading.Lock()
 
 # Columns stored as JSON text.
-_JSON_FIELDS = ("extracted", "queries", "candidates", "chosen", "screening", "pushed_row",
+_JSON_FIELDS = ("agent_note", "extracted", "queries", "candidates", "chosen", "screening", "pushed_row",
                 "gtm_counted", "merged_from")
 
 
@@ -64,6 +64,7 @@ _COLUMNS = {
     "created_at": "REAL",
     "updated_at": "REAL",
     "rejected_at": "REAL",         # when a reviewer rejected it (Leads page date filter)
+    "agent_note": "TEXT",          # JSON: the review agent's suggestion for the reviewer
 }
 
 

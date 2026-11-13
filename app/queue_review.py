@@ -1,20 +1,17 @@
-"""Review-queue agent: decides the leads waiting in review, so nobody has to.
+"""Review-queue agent: reads every lead in review and leaves its suggestion
+for the person who decides (the team wants maximum human review).
 
-Every cycle it looks at each lead in review and, following the rules in
-review_rules.md (the team adds to that list over time):
+It changes a lead itself in one case only: the lead is plainly spam, a scam or
+a test (random letters, keyboard mashing, "test test", a sales pitch or SEO /
+guest-post offer instead of someone asking about a visa). Those are rejected.
 
-- reject: the lead gave a link that has nothing to do with them (someone
-  else's profile, an unrelated site, junk), or the lead is spam / a test;
-- accept: the chosen profile's score is good (at least REVIEW_AGENT_ACCEPT_SCORE,
-  0.60), with no bad link and not plainly someone else: it gets its AE like a
-  reviewer's Accept;
-- leave: anything unclear stays in review for a person.
+Everything else stays in review. The agent writes a suggestion on the lead
+("agent_note": accept / reject / unsure, with the reason, e.g. "the LinkedIn
+they gave is someone else's"), which the Review page shows next to Accept and
+Reject. A person makes the call.
 
-The LLM only proposes; the code accepts on the score (unless the LLM sees a bad
-link, spam or plainly another person) and rejects only on a confident call. Each lead is decided once per
-version of the rules (meta "rq_done": lead id -> rules hash), so adding a rule
-makes it look at the leads still in review again. Every decision is logged
-(meta "rq_log") with the reason.
+Each lead is read once per version of the rules (review_rules.md + the prompt):
+adding a rule makes it read the leads in review again.
 """
 from __future__ import annotations
 
@@ -26,16 +23,16 @@ import threading
 import time
 
 from . import config, db
-from .pipeline import distribution, llm
+from .pipeline import llm
 
 _RULES_FILE = pathlib.Path(__file__).with_name("review_rules.md")
 _lock = threading.Lock()
 
-_SYSTEM = """You review sales leads for a US immigration (O-1 / EB-1 / EB-2 NIW visa) firm.
+_SYSTEM = """You help a person review sales leads for a US immigration (O-1 / EB-1 / EB-2 NIW visa) firm.
 Each lead filled in a form (name, email, phone, company, visa, message, and a
 "LinkedIn" field). An automated search then picked the online profile it thinks
-is the lead's own and scored how sure it is (0-1). These leads were left for a
-person to decide; you decide instead, following the team's rules.
+is the lead's own and scored how sure it is (0-1). A person decides each lead;
+you give them a short, useful suggestion, following the team's rules.
 
 First, classify what the lead put in the LinkedIn field ("given_link"):
 - "theirs": a link to a page about them: their LinkedIn, their own site,
@@ -47,28 +44,29 @@ First, classify what the lead put in the LinkedIn field ("given_link"):
   description, a company name, "N/A", "I don't have it", a word or two.
 - "none": blank.
 - "unclear": you can't tell.
-Only "someone_else" and "unrelated" are bad links. Writing text instead of a
-link is NOT a bad link.
 
-Then "spam": true only if the whole lead is plainly fake or a test: a
-random-letter name and gibberish details, keyboard mashing, "test test".
+Then "spam": true only if the lead is plainly not a real person asking about
+immigration: random-letter name and gibberish details, keyboard mashing,
+"test test", or a scam / sales pitch (selling SEO, guest posts, marketing,
+crypto; a bot message). A real person with a sparse, odd or off-topic message
+is NOT spam.
 
 Then "other_person": true only if the chosen profile is clearly a DIFFERENT
 person from the lead (wrong name, or details that plainly contradict theirs).
 Not being able to fully confirm it is not "other_person".
 
-Then the verdict:
-- "reject": the team's rules say to reject it (a bad link, or spam).
-- "accept": nothing in the rules says to reject it and the chosen profile could
-  well be theirs.
-- "leave": anything else.
+Then your suggestion for the person deciding:
+- "accept": a real lead; the profile (if any) could well be theirs, or no
+  profile but nothing wrong with the lead.
+- "reject": a reason to drop it (spam/scam, a bad link that isn't theirs).
+- "unsure": you can't tell.
 
 Reply with JSON only:
 {"given_link": "theirs" | "someone_else" | "unrelated" | "not_a_link" | "none" | "unclear",
  "spam": true | false,
  "other_person": true | false,
- "verdict": "reject" | "accept" | "leave",
- "confidence": 0-1 (how sure you are of the verdict),
+ "suggest": "accept" | "reject" | "unsure",
+ "confidence": 0-1 (how sure you are),
  "reason": "one or two plain sentences a sales manager would understand"}"""
 
 
@@ -114,40 +112,26 @@ def _brief(lead: dict) -> str:
 
 
 def judge(lead: dict) -> dict:
-    """The LLM's call on one review lead, made safe: what the code will do."""
+    """The LLM's read of one review lead: what the code will do (reject only
+    plain spam / scams / tests; otherwise leave it with a suggestion)."""
     user = "THE TEAM'S RULES (follow them):\n" + rules() + "\n\n" + _brief(lead)
     try:
         j = llm.chat_json(_SYSTEM, user, max_tokens=400)
-    except Exception as e:  # noqa: BLE001 — no answer means a person decides
-        return {"action": "leave", "reason": f"Review agent couldn't decide: {str(e)[:150]}"}
-    verdict = str(j.get("verdict", "leave")).lower()
+    except Exception as e:  # noqa: BLE001 — no answer: a person decides, and we try again
+        return {"action": "leave", "reason": f"Review agent couldn't read it: {str(e)[:150]}"}
+    suggest = str(j.get("suggest") or j.get("verdict") or "unsure").lower()
     try:
         conf = float(j.get("confidence") or 0)
     except (TypeError, ValueError):
         conf = 0.0
-    score = float(lead.get("confidence") or 0)
+    spam = j.get("spam") is True
     reason = str(j.get("reason") or "").strip()
     given = str(j.get("given_link") or "").lower()
-    raw = (lead.get("link_raw") or "").strip()
-    # A bad link must be an actual link (not an email or a few words).
-    is_url = "@" not in raw and " " not in raw and bool(re.search(r"https?:|www\.|\.[a-z]{2,}/|/in/", raw, re.I))
-    bad_link = given in ("someone_else", "unrelated") and is_url
-    spam = j.get("spam") is True
-    action = "leave"
-    if verdict == "reject" and ((bad_link and conf >= 0.8) or (spam and conf >= 0.9)):
-        action = "reject"
-    elif verdict == "reject":
-        reason = "Not rejected: only a link that isn't theirs, or a spam lead, is. " + reason
-    # The team's call: a good score (REVIEW_AGENT_ACCEPT_SCORE, 0.60) is enough
-    # to accept, unless it has a bad link, is spam, or the profile is plainly
-    # someone else.
-    elif score >= config.REVIEW_AGENT_ACCEPT_SCORE and lead.get("chosen") \
-            and not bad_link and not spam and j.get("other_person") is not True:
-        action = "accept"
-    elif j.get("other_person") is True:
-        reason = "Not accepted: the chosen profile looks like someone else. " + reason
-    return {"action": action, "verdict": verdict, "given_link": given, "spam": spam,
-            "confidence": conf, "score": score, "reason": reason}
+    action = "reject" if spam and conf >= 0.9 else "leave"
+    return {"action": action, "suggest": suggest if suggest in ("accept", "reject", "unsure") else "unsure",
+            "verdict": suggest, "given_link": given, "spam": spam,
+            "other_person": j.get("other_person") is True, "confidence": conf,
+            "score": float(lead.get("confidence") or 0), "reason": reason}
 
 
 def run(live: bool = True, only_new: bool = True) -> dict:
@@ -166,19 +150,17 @@ def run(live: bool = True, only_new: bool = True) -> dict:
             d = judge(lead)
             out["plan"].append({"lead": lead["id"], "name": lead.get("name"), **d})
             if live:
-                if d["action"] == "accept":
-                    fields = {} if lead.get("owner") else {"owner": distribution.assign_owner(lead)}
-                    db.update_lead(lead["id"], status="accepted",
-                                   reasoning="Accepted by review agent: " + d["reason"] + " "
-                                             + (lead.get("reasoning") or ""), **fields)
-                elif d["action"] == "reject":
+                if d["action"] == "reject":
                     db.update_lead(lead["id"], status="rejected", rejected_at=time.time(),
-                                   reasoning="Rejected by review agent: " + d["reason"],
+                                   reasoning="Rejected by review agent (spam / scam / test): " + d["reason"],
                                    **({} if lead.get("pushed") else {"owner": None}))
+                elif d.get("verdict"):
+                    db.update_lead(lead["id"], agent_note={"suggest": d["suggest"], "reason": d["reason"],
+                                                           "confidence": d["confidence"], "at": time.time()})
                 if d.get("verdict"):                  # no answer: try again next cycle
                     done[str(lead["id"])] = h
                 log.insert(0, {"at": time.time(), "lead": lead["id"], "name": lead.get("name"), **d})
-            out[{"accept": "accepted", "reject": "rejected"}.get(d["action"], "left")] += 1
+            out["rejected" if d["action"] == "reject" else "left"] += 1
         if live:
             db.meta_set("rq_done", json.dumps(done))
             db.meta_set("rq_log", json.dumps(log[:2000]))

@@ -228,7 +228,14 @@ async function loadReview() {
     <div class="rc-meta">${esc(l.company || l.email || "")}${l.owner ? " · AE: " + esc(l.owner) : ""}</div>
     <div><div class="tm-label">${esc(label)}</div>${ch.url ? `<a class="rc-url" href="${ch.url}" target="_blank" rel="noopener">${esc(prettyUrl(ch.url))}</a>` : ""}</div>
     <div class="cand-reason">${esc((l.reasoning || "").slice(0, 180))}</div>
+    ${agentNote(l.agent_note)}
     <div class="rc-actions"><button class="mini ok" data-accept="${l.id}">Accept</button><button class="mini no" data-reject="${l.id}">Reject</button><button class="link-btn" data-open="${l.id}">Details ▸</button></div></div>`; }).join(""))) wireRowButtons(w);
+}
+
+const _AGENT_SAYS = { accept: "Accept", reject: "Reject", unsure: "Not sure" };
+function agentNote(n) {   // the review agent's suggestion; the reviewer decides
+  if (!n || !n.suggest) return "";
+  return `<div class="rc-agent ${esc(n.suggest)}"><span class="rc-agent-k">Agent suggests</span> <b>${esc(_AGENT_SAYS[n.suggest] || n.suggest)}</b>${n.reason ? ` — ${esc(n.reason)}` : ""}</div>`;
 }
 
 function _dupSide(l, label) {

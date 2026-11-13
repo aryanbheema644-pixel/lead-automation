@@ -176,6 +176,14 @@ def _set_stage(lead_id: int, stage: str) -> None:
         db.update_lead(lead_id, stage=stage, status="processing")
 
 
+def _no_go(summary) -> str:
+    """The reject reason if screening judged the (confirmed) profile a NO-GO, else ''."""
+    if isinstance(summary, dict) and str(summary.get("tier") or "").upper().replace("_", "-") == "NO-GO":
+        why = summary.get("red_flag") or summary.get("best_path") or ""
+        return "Screening verdict: NO-GO" + (f" ({why})" if why else "") + "."
+    return ""
+
+
 def process_lead(lead_id: int, recheck: bool = False) -> None:
     """Find and screen the lead's profile, decide, assign the AE.
 
@@ -219,6 +227,18 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
         if provided_raw and not provided_note:
             chosen = {"url": provided, "source_type": "linkedin (provided)", "person": {}}
             screen_summary = _screen_lead(lead_id, chosen, raw=provided_raw)
+            nogo = None if recheck else _no_go(screen_summary)
+            if nogo:
+                candidates = [{"url": provided, "source_type": "linkedin (provided)",
+                               "score": None, "signals": {}, "person": chosen.get("person", {})}]
+                _cache_on_candidate(candidates, chosen, screen_summary)
+                db.update_lead(lead_id, status="rejected", stage="done", rejected_at=time.time(),
+                               confidence=None, candidates=candidates, chosen=chosen,
+                               screening=screen_summary, screened=1, owner=None, error=None,
+                               reasoning="LinkedIn URL provided by the lead — the profile is theirs. " + nogo)
+                if not recheck:
+                    dedupe.check_processed(lead_id)
+                return
             owner = lead.get("owner") if recheck else distribution.assign_owner({
                 "phone": lead.get("phone"), "message": lead.get("message"),
                 "visa": lead.get("visa"), "extracted": {}, "chosen": chosen})
@@ -385,6 +405,11 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
                                  "confirmed, so no profile is set — check it on the lead. " + (reasoning or ""))
                 chosen, screen_summary = None, None
             status, owner = "accepted", lead.get("owner")
+        elif status == "accepted" and _no_go(screen_summary):
+            # A confirmed profile that screening says is a NO-GO: the one case the
+            # pipeline rejects (with test entries and, in review, spam/scams).
+            status = "rejected"
+            reasoning = (reasoning or "") + " " + _no_go(screen_summary)
         elif status == "accepted":
             owner = distribution.assign_owner({
                 "phone": lead.get("phone"), "message": lead.get("message"),
@@ -395,6 +420,7 @@ def process_lead(lead_id: int, recheck: bool = False) -> None:
             candidates=candidates,
             status=status,
             stage="done",
+            **({"rejected_at": time.time()} if status == "rejected" else {}),
             confidence=confidence,
             reasoning=reasoning,
             chosen=chosen,
