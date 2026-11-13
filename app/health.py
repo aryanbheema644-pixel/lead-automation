@@ -9,7 +9,7 @@ left on the plan (the credit check). Each gets a state:
 - down: the key is rejected, the service doesn't answer, or credits are out;
 - off:  not configured.
 
-A move into low or down sends an alert (Google Chat, else email: notify.py),
+A move into low or down sends an alert to Google Chat (notify.py),
 again every ALERT_REPEAT_HOURS while it stays that way, and once more when it
 recovers. The pipeline also reports a failed call the moment it happens
 (saw_error), so an outage between checks is flagged at once.

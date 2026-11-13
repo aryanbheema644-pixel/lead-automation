@@ -193,18 +193,12 @@ PIPEDRIVE_WRITE = _get("PIPEDRIVE_WRITE", "false").lower() in ("1", "true", "yes
 
 
 # Service health (health.py): how often to check credits and keys, and where
-# alerts go (notify.py). Google Chat: a space's incoming-webhook URL.
+# alerts go (notify.py): the Google Chat space's incoming-webhook URL.
 HEALTH_CHECK_MINUTES = _get_int("HEALTH_CHECK_MINUTES", 15)
 RENDER_MEMORY_MB = _get_int("RENDER_MEMORY_MB", 512)            # the instance's RAM (Starter = 512)
 RENDER_MEMORY_ALERT_PCT = _get_float("RENDER_MEMORY_ALERT_PCT", 85)
 RENDER_API_KEY = _get("RENDER_API_KEY")                          # optional: latest deploy status
 GCHAT_WEBHOOK_URL = _get("GCHAT_WEBHOOK_URL")
-SMTP_HOST = _get("SMTP_HOST")
-SMTP_PORT = _get_int("SMTP_PORT", 587)
-SMTP_USER = _get("SMTP_USER")
-SMTP_PASSWORD = _get("SMTP_PASSWORD")
-ALERT_EMAIL_TO = _get("ALERT_EMAIL_TO")
-ALERT_EMAIL_FROM = _get("ALERT_EMAIL_FROM")
 
 
 def provider_status() -> dict:

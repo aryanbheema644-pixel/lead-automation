@@ -805,8 +805,8 @@ function renderServices() {
   if ($("#svcEvery")) $("#svcEvery").textContent = _svc.every_minutes || 15;
   if ($("#svcChecked")) $("#svcChecked").textContent = `Last checked ${svcAgo(_svc.at)}`;
   const ch = _svc.channels || {};
-  setHTML($("#svcChannels"), `Alerts go to: ${ch.google_chat ? '<span class="svc-ok">Google Chat ✓</span>' : '<span class="svc-no">Google Chat not set up</span>'} · ${ch.email ? `<span class="svc-ok">Email ✓ (${esc(ch.email_to)})</span>` : '<span class="svc-no">Email not set up</span>'}`
-    + (!ch.google_chat && !ch.email ? ' <span class="svc-no">— nobody is told yet. Add GCHAT_WEBHOOK_URL on Render.</span>' : ""));
+  setHTML($("#svcChannels"), ch.google_chat ? 'Alerts go to: <span class="svc-ok">Google Chat ✓</span>'
+    : 'Alerts go to: <span class="svc-no">Google Chat not set up — nobody is told yet. Add GCHAT_WEBHOOK_URL on Render.</span>');
   const order = { down: 0, low: 1, ok: 2, off: 3 };
   const rows = [...list].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
   setHTML($("#svcGrid"), `<div class="svc-head"><span>Service</span><span>Status</span><span>API check</span><span>Credits</span><span>Plan</span><span>Alert cap</span><span></span></div>` + rows.map((s) => {

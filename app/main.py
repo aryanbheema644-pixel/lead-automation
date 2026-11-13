@@ -1704,7 +1704,7 @@ def services_cap(body: dict) -> JSONResponse:
 
 @app.post("/api/services/test-alert")
 def services_test_alert() -> JSONResponse:
-    """Send a test message to the alert channels (Google Chat / email)."""
+    """Send a test message to the Google Chat space."""
     return JSONResponse({"delivered": notify.send(
         "LeadSearch test alert: if you can read this, service alerts reach this space.")})
 
