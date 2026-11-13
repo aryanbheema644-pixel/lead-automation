@@ -20,6 +20,7 @@ import json
 import os
 import resource
 import sys
+import threading
 import time
 
 import httpx
@@ -72,33 +73,66 @@ def _commit() -> str:
 
 
 def record_start() -> None:
-    """Called once at startup: remember when and on which commit we started."""
+    """Called once at startup: remember when and on which commit we started,
+    and how much memory the previous run was using just before it stopped."""
     try:
         starts = json.loads(db.meta_get("server_starts", "[]") or "[]")
+        last = json.loads(db.meta_get("mem_last", "{}") or "{}")
     except ValueError:
-        starts = []
-    starts.insert(0, {"at": _started, "commit": _commit()})
+        starts, last = [], {}
+    starts.insert(0, {"at": _started, "commit": _commit(),
+                      "prev_pct": last.get("pct"), "prev_peak": last.get("peak"), "prev_at": last.get("at")})
     db.meta_set("server_starts", json.dumps(starts[:100]))
+    threading.Thread(target=_sample, daemon=True).start()
 
 
-def _restarts(window_h: float = 24) -> tuple[int, int, float | None]:
-    """(starts in the window, of those not caused by a new deploy, last unexpected)."""
+_peak = 0.0
+
+
+def _sample() -> None:
+    """Every minute, note memory (and this run's peak), so after a restart we
+    can tell whether the server was near its limit when it went down."""
+    global _peak
+    while True:
+        try:
+            m = memory()
+            _peak = max(_peak, m["pct"])
+            db.meta_set("mem_last", json.dumps({"at": time.time(), "pct": m["pct"], "peak": _peak}))
+        except Exception:  # noqa: BLE001 — sampling must never break the app
+            pass
+        time.sleep(60)
+
+
+def _kind(s: dict, prev: dict | None) -> str:
+    """deploy | memory | other: why the server (re)started."""
+    if not prev or not s.get("commit") or s.get("commit") != prev.get("commit"):
+        return "deploy"                         # new code went live
+    near = max(s.get("prev_pct") or 0, 0)
+    if near >= MEMORY_RESTART_PCT or (s.get("prev_peak") or 0) >= 95:
+        return "memory"                         # it was near the limit just before
+    return "other"                              # settings change, manual restart, Render maintenance
+
+
+MEMORY_RESTART_PCT = 75
+
+
+def _restarts(window_h: float = 24) -> dict:
+    """Starts in the window, by kind, and when the last memory restart was."""
     try:
         starts = json.loads(db.meta_get("server_starts", "[]") or "[]")
     except ValueError:
         starts = []
     since = time.time() - window_h * 3600
-    n = unexpected = 0
-    last = None
+    out = {"total": 0, "deploy": 0, "memory": 0, "other": 0, "last_memory": None}
     for i, s in enumerate(starts):
         if s["at"] < since:
             break
-        n += 1
-        prev = starts[i + 1] if i + 1 < len(starts) else None
-        if prev and s.get("commit") and s.get("commit") == prev.get("commit"):
-            unexpected += 1                     # same code as before: Render restarted it
-            last = last or s["at"]
-    return n, unexpected, last
+        k = _kind(s, starts[i + 1] if i + 1 < len(starts) else None)
+        out["total"] += 1
+        out[k] += 1
+        if k == "memory" and out["last_memory"] is None:
+            out["last_memory"] = s["at"]
+    return out
 
 
 def _ago(sec: float) -> str:
@@ -130,20 +164,21 @@ def _deploy() -> dict | None:
 def check() -> dict:
     """The health row for the Render server (shape as health.check's)."""
     m = memory()
-    n, unexpected, last = _restarts()
+    rs = _restarts()
     up = time.time() - _started
-    out = {"api_ok": True, "memory": m, "uptime": _ago(up), "commit": _commit(),
-           "restarts_24h": n, "unexpected_24h": unexpected,
+    out = {"api_ok": True, "memory": m, "uptime": _ago(up), "commit": _commit(), "restarts_24h": rs,
            "plan": f"Up {_ago(up)}" + (f" · commit {_commit()}" if _commit() else "")}
     notes, warn = [], []
     if m["pct"] >= config.RENDER_MEMORY_ALERT_PCT:
         warn.append(f"Memory at {m['pct']:.0f}% ({m['used_mb']} of {m['limit_mb']} MB): Render restarts "
                     "the server at 100%")
-    if unexpected and last and time.time() - last < 6 * 3600:
-        warn.append(f"Render restarted the server on its own {_ago(time.time() - last)} ago "
-                    "(no new deploy): most likely it ran out of memory")
-    elif unexpected:
-        notes.append(f"{unexpected} restart(s) without a deploy in the last 24 h")
+    if rs["last_memory"] and time.time() - rs["last_memory"] < 6 * 3600:
+        warn.append(f"The server restarted {_ago(time.time() - rs['last_memory'])} ago while memory "
+                    "was near its limit: Render most likely restarted it for running out of memory")
+    parts = [f"{rs[k]} {label}" for k, label in (("deploy", "deploy"), ("other", "settings/manual"),
+                                                    ("memory", "memory")) if rs[k]]
+    if parts:
+        notes.append("Restarts in the last 24 h: " + ", ".join(parts))
     dep = _deploy()
     if dep and dep.get("status") in ("build_failed", "update_failed", "canceled", "pre_deploy_failed"):
         warn.append(f"Latest deploy {dep.get('commit') or ''} {dep['status'].replace('_', ' ')}: "

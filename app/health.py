@@ -361,7 +361,10 @@ def _alerts(results: dict) -> None:
     delivered = notify.send(text)
     log.insert(0, {"at": now, "text": text, "delivered": delivered})
     db.meta_set("svc_alert_log", json.dumps(log[:200]))
-    db.meta_set("svc_alerted", json.dumps(sent))
+    # Only remember it as told if it reached someone: with no channel set up (or
+    # Chat failing), the same alert goes out once a channel works.
+    if any(v == "sent" for v in delivered.values()):
+        db.meta_set("svc_alerted", json.dumps(sent))
 
 
 # ── Background loop ─────────────────────────────────────────────────────────

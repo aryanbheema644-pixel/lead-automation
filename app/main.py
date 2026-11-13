@@ -68,6 +68,10 @@ def _startup() -> None:
         db.meta_set("dedupe_scanned", "1")
     _start_scheduler()
     server_status.record_start()
+    if db.meta_get("svc_alerted_reset_v1") != "1":
+        # Alerts noted before any channel existed never reached anyone: send them now.
+        db.meta_set("svc_alerted", "{}")
+        db.meta_set("svc_alerted_reset_v1", "1")
     health.start()
 
 
