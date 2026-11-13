@@ -215,6 +215,28 @@ def _state(res: dict, cap: float | None) -> str:
     return "ok"
 
 
+_DASHBOARDS = {
+    "openrouter": "https://openrouter.ai/settings/credits",
+    "tavily": "https://app.tavily.com/home",
+    "apify": "https://console.apify.com/billing",
+    "firecrawl": "https://www.firecrawl.dev/app/usage",
+    "pipedrive": "https://app.pipedrive.com",
+}
+
+
+def dashboard_url(name: str) -> str:
+    """Where a click on the service takes you: its own dashboard."""
+    import os
+    if name == "render":
+        sid = os.environ.get("RENDER_SERVICE_ID")
+        return f"https://dashboard.render.com/web/{sid}" if sid else "https://dashboard.render.com"
+    if name == "sheets" and config.GOOGLE_SOURCE_SHEET_ID:
+        return f"https://docs.google.com/spreadsheets/d/{config.GOOGLE_SOURCE_SHEET_ID}/edit"
+    if name == "screening":
+        return ""
+    return _DASHBOARDS.get(name, SERVICES[name].get("topup", ""))
+
+
 def check(name: str) -> dict:
     s = SERVICES[name]
     try:
@@ -225,7 +247,7 @@ def check(name: str) -> dict:
         res = {"api_ok": False, "detail": f"Check failed: {str(e)[:160]}"}
     cap = caps().get(name)
     out = {"key": name, "name": s["name"], "role": s["role"], "unit": s["unit"], "cap": cap,
-           "topup": s["topup"], "checked_at": time.time(), **res}
+           "topup": s["topup"], "url": dashboard_url(name), "checked_at": time.time(), **res}
     out["state"] = _state(res, cap)
     if out["state"] == "down" and res.get("api_ok") and not res.get("detail"):
         out["detail"] = "Out of credits"

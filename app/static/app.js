@@ -794,9 +794,13 @@ function renderServices() {
   const list = Object.values(_svc.services || {});
   const bad = list.filter((s) => s.state === "down" || s.state === "low");
   const badge = $("#svcCount"); if (badge) { badge.textContent = bad.length; badge.classList.toggle("alert", bad.length > 0); }
-  setHTML($("#svcBar"), list.length ? list.filter((s) => s.state !== "off").map((s) =>
-    `<span class="svc-pill ${s.state}" title="${esc(s.name)}: ${esc(_SVC_STATE[s.state])}${s.detail ? " · " + esc(s.detail) : ""}"><i></i>${esc(s.name)} <b>${esc(svcShort(s))}</b></span>`).join("")
-    : `<span class="svc-pill"><i></i>Services: not checked yet</span>`);
+  setHTML($("#svcBar"), (list.length ? list.filter((s) => s.state !== "off").map((s) => {
+    const tip = `${s.name}: ${_SVC_STATE[s.state]}${s.detail ? " · " + s.detail : ""}${s.url ? " · click to open " + s.name : ""}`;
+    const inner = `<i></i>${esc(s.name)} <b>${esc(svcShort(s))}</b>`;
+    return s.url ? `<a class="svc-pill ${s.state}" href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(tip)}">${inner}</a>`
+                 : `<span class="svc-pill ${s.state}" title="${esc(tip)}">${inner}</span>`;
+  }).join("") : `<span class="svc-pill"><i></i>Services: not checked yet</span>`)
+    + `<a class="svc-pill svc-more" href="#services" title="Credits, API checks and alert caps for every service">Details ›</a>`);
   if ($("#svcEvery")) $("#svcEvery").textContent = _svc.every_minutes || 15;
   if ($("#svcChecked")) $("#svcChecked").textContent = `Last checked ${svcAgo(_svc.at)}`;
   const ch = _svc.channels || {};
@@ -821,7 +825,7 @@ function renderServices() {
       ? `<span class="svc-cap">${s.unit === "$" ? "$" : ""}<input type="number" min="0" step="${s.unit === "$" ? "0.5" : "10"}" value="${esc(s.cap)}" data-cap="${esc(s.key)}" aria-label="Alert cap for ${esc(s.name)}" />${s.unit === "$" ? "" : " " + esc(s.unit)} <button class="mini" data-cap-save="${esc(s.key)}">Save</button></span>`
       : '<span class="subtle">—</span>';
     return `<div class="panel svc-card ${s.state}">
-      <div class="svc-c svc-who"><i class="svc-dot"></i><div><div class="svc-name">${esc(s.name)}</div><div class="subtle">${esc(s.role || "")}</div></div></div>
+      <div class="svc-c svc-who"><i class="svc-dot"></i><div><div class="svc-name">${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="Open ${esc(s.name)}">${esc(s.name)} ↗</a>` : esc(s.name)}</div><div class="subtle">${esc(s.role || "")}</div></div></div>
       <div class="svc-c"><span class="svc-state ${s.state}">${esc(_SVC_STATE[s.state] || s.state)}</span></div>
       <div class="svc-c"><span class="svc-lbl">API check</span>${s.state === "off" ? "—" : s.api_ok ? '<span class="svc-ok">Key works ✓</span>' : '<span class="svc-no">Failing ✕</span>'}</div>
       <div class="svc-c"><span class="svc-lbl">Credits</span>${credit}</div>
