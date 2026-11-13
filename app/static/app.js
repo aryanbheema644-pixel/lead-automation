@@ -785,6 +785,7 @@ function svcShort(s) {
 }
 function svcAgo(t) { if (!t) return "never"; const m = Math.round((Date.now() / 1000 - t) / 60); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; }
 let _svc = null;
+const _svcEditing = new Set();   // services whose alert cap is being edited
 async function loadServices() {
   try { _svc = await readResponse(await fetch("/api/services")); } catch (e) { return; }
   renderServices();
@@ -821,9 +822,11 @@ function renderServices() {
         : `of ${svcAmt(s, s.limit)}${s.per ? " " + s.per : ""}`;
       credit = `<b class="svc-amt">${esc(svcAmt(s, s.remaining))}</b> <span class="subtle">${s.balance ? "balance" : "left"}</span><div class="subtle svc-sub">${esc(sub)}</div>${pct !== null ? `<div class="svc-meter"><span style="width:${pct}%"></span></div>` : ""}`;
     } else if (s.unit) credit = "—";
-    const cap = s.cap !== null && s.cap !== undefined
-      ? `<span class="svc-cap">${s.unit === "$" ? "$" : ""}<input type="number" min="0" step="${s.unit === "$" ? "0.5" : "10"}" value="${esc(s.cap)}" data-cap="${esc(s.key)}" aria-label="Alert cap for ${esc(s.name)}" />${s.unit === "$" ? "" : " " + esc(s.unit)} <button class="mini" data-cap-save="${esc(s.key)}">Save</button></span>`
-      : '<span class="subtle">—</span>';
+    const capTxt = s.unit === "$" ? `$${Number(s.cap)}` : `${Number(s.cap).toLocaleString()} ${s.unit}`;
+    const cap = s.cap === null || s.cap === undefined ? '<span class="subtle">—</span>'
+      : _svcEditing.has(s.key)
+        ? `<span class="svc-cap">${s.unit === "$" ? "$" : ""}<input type="number" min="0" step="${s.unit === "$" ? "0.5" : "10"}" value="${esc(s.cap)}" data-cap="${esc(s.key)}" aria-label="Alert cap for ${esc(s.name)}" />${s.unit === "$" ? "" : " " + esc(s.unit)} <button class="mini" data-cap-save="${esc(s.key)}">Save</button><button class="svc-x" data-cap-cancel="${esc(s.key)}" title="Cancel" aria-label="Cancel">✕</button></span>`
+        : `<span class="svc-cap-view">at ${esc(capTxt)} <button class="svc-pen" data-cap-edit="${esc(s.key)}" title="Change the alert cap" aria-label="Change the alert cap for ${esc(s.name)}"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg></button></span>`;
     return `<div class="panel svc-card ${s.state}">
       <div class="svc-c svc-who"><i class="svc-dot"></i><div><div class="svc-name">${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="Open ${esc(s.name)}">${esc(s.name)} ↗</a>` : esc(s.name)}</div><div class="subtle">${esc(s.role || "")}</div></div></div>
       <div class="svc-c"><span class="svc-state ${s.state}">${esc(_SVC_STATE[s.state] || s.state)}</span></div>
@@ -839,6 +842,11 @@ function renderServices() {
   const log = _svc.alerts || [];
   setHTML($("#svcLog"), log.length ? log.map((a) => `<div class="svc-alert"><div class="subtle">${new Date(a.at * 1000).toLocaleString()} · ${esc(Object.entries(a.delivered || {}).map(([k, v]) => `${k.replace("_", " ")}: ${v}`).join(", "))}</div><pre>${esc(a.text)}</pre></div>`).join("") : '<p class="subtle" style="padding:14px">No alerts sent yet.</p>');
 }
+$("#svcGrid").addEventListener("keydown", (e) => {   // Enter saves, Escape cancels
+  const i = e.target.closest("[data-cap]"); if (!i) return;
+  if (e.key === "Enter") document.querySelector(`[data-cap-save="${i.dataset.cap}"]`)?.click();
+  if (e.key === "Escape") { _svcEditing.delete(i.dataset.cap); renderServices(); }
+});
 $("#svcCheckBtn").addEventListener("click", async () => {
   const b = $("#svcCheckBtn"), m = $("#svcMsg"); b.disabled = true; m.className = "msg"; m.textContent = "Checking every service…";
   try { _svc = await readResponse(await fetch("/api/services/check", { method: "POST" })); renderServices(); m.textContent = "Done."; }
@@ -850,10 +858,18 @@ $("#svcTestBtn").addEventListener("click", async () => {
   catch (e) { m.className = "msg err"; m.textContent = e.message; }
 });
 $("#svcGrid").addEventListener("click", async (e) => {
+  const ed = e.target.closest("[data-cap-edit]"), cx = e.target.closest("[data-cap-cancel]");
+  if (ed || cx) {
+    const k = (ed || cx).dataset.capEdit || (ed || cx).dataset.capCancel;
+    ed ? _svcEditing.add(k) : _svcEditing.delete(k);
+    renderServices();
+    if (ed) { const i = document.querySelector(`[data-cap="${k}"]`); if (i) { i.focus(); i.select(); } }
+    return;
+  }
   const b = e.target.closest("[data-cap-save]"); if (!b) return;
   const key = b.dataset.capSave, inp = document.querySelector(`[data-cap="${key}"]`), m = $("#svcMsg");
   b.disabled = true; m.className = "msg"; m.textContent = "Saving the cap…";
-  try { _svc = await readResponse(await fetch("/api/services/cap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ service: key, value: Number(inp.value) }) })); renderServices(); m.textContent = "Cap saved."; }
+  try { _svc = await readResponse(await fetch("/api/services/cap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ service: key, value: Number(inp.value) }) })); _svcEditing.delete(key); renderServices(); m.textContent = "Cap saved."; }
   catch (err) { m.className = "msg err"; m.textContent = err.message; } finally { b.disabled = false; }
 });
 loadServices();
