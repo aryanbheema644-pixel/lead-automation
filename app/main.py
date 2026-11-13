@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, dedupe, gtm, pipedrive, queue_review, review_agent, sheets, source_status, source_writeback
+from . import health, notify, config, db, dedupe, gtm, pipedrive, queue_review, review_agent, sheets, source_status, source_writeback
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -67,6 +67,7 @@ def _startup() -> None:
         db.meta_set("dedupe_scan_result", json.dumps(dedupe.scan_existing()))
         db.meta_set("dedupe_scanned", "1")
     _start_scheduler()
+    health.start()
 
 
 # One-off (2026-10-13, user request): the automation starts AFTER these sheet
@@ -1672,6 +1673,35 @@ def _safe(fn) -> None:
         fn()
     except Exception:  # noqa: BLE001 — the next cycle retries
         pass
+
+
+@app.get("/api/services")
+def services() -> JSONResponse:
+    """Last credit + API check of every outside service (the status bar)."""
+    return JSONResponse(health.status())
+
+
+@app.post("/api/services/check")
+def services_check() -> JSONResponse:
+    """Check every service now (the Services page's Check now button)."""
+    return JSONResponse(health.check_all())
+
+
+@app.post("/api/services/cap")
+def services_cap(body: dict) -> JSONResponse:
+    """Set the low-credit alert cap for one service: {"service", "value"}."""
+    try:
+        health.set_cap(str(body.get("service")), float(body.get("value")))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return JSONResponse(health.restate())
+
+
+@app.post("/api/services/test-alert")
+def services_test_alert() -> JSONResponse:
+    """Send a test message to the alert channels (Google Chat / email)."""
+    return JSONResponse({"delivered": notify.send(
+        "LeadSearch test alert: if you can read this, service alerts reach this space.")})
 
 
 @app.get("/api/aes/turns")

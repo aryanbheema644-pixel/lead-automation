@@ -74,6 +74,9 @@ def chat_json(system: str, user: str, *, max_tokens: int = 1500, fast: bool = Fa
             continue
         if r.status_code != 200:
             last_err = LLMError(f"OpenRouter {r.status_code}: {r.text[:300]}")
+            if r.status_code in (401, 402, 403):        # bad key / out of credits
+                from .. import health
+                health.saw_error("openrouter", f"HTTP {r.status_code}: {r.text[:200]}")
             if r.status_code in (400, 401, 402, 403):
                 break                     # bad request / auth / credits: retrying won't help
             continue

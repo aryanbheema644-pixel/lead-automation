@@ -32,6 +32,9 @@ def tavily_search(query: str, max_results: int = 5,
     except httpx.HTTPError as e:
         raise SearchError(f"Tavily request failed: {e}") from e
     if r.status_code != 200:
+        if r.status_code in (401, 402, 403, 429, 432, 433):   # bad key / out of searches
+            from .. import health
+            health.saw_error("tavily", f"HTTP {r.status_code}: {r.text[:200]}")
         raise SearchError(f"Tavily {r.status_code}: {r.text[:300]}")
     data = r.json()
     out = []

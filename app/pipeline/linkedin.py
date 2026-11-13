@@ -190,6 +190,9 @@ def _run_actor(actor: str, payload: dict, timeout: int = 240) -> list:
             msg = (r.json().get("error") or {}).get("message") or r.text
         except (ValueError, AttributeError):
             msg = r.text
+        if r.status_code in (401, 402, 403):                  # bad key / out of credit
+            from .. import health
+            health.saw_error("apify", f"HTTP {r.status_code}: {str(msg)[:160]}")
         raise ApifyDown(f"LinkedIn checker (Apify) not answering: HTTP {r.status_code} {str(msg)[:160]}")
     try:
         items = r.json()

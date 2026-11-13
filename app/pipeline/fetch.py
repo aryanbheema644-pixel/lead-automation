@@ -35,6 +35,9 @@ def firecrawl_scrape(url: str) -> str:
     except httpx.HTTPError:
         return ""
     if r.status_code != 200:
+        if r.status_code in (401, 402, 403):                  # bad key / out of credits
+            from .. import health
+            health.saw_error("firecrawl", f"HTTP {r.status_code}: {r.text[:200]}")
         return ""
     data = r.json().get("data", {})
     return data.get("markdown") or data.get("content") or ""

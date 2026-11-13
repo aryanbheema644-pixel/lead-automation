@@ -21,7 +21,7 @@ $("#themeToggle").addEventListener("click", () => {
 });
 
 // ── Router ──────────────────────────────────────────────────────────────────
-const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", licheck: "LinkedIn check", gtm: "GTM report", written: "Written on Pipedrive" };
+const PAGES = { dashboard: "Dashboard", pipeline: "Pipeline", leads: "Leads", review: "Needs review", duplicates: "Duplicates", pipedrive: "Pipedrive", licheck: "LinkedIn check", gtm: "GTM report", written: "Written on Pipedrive", services: "Services" };
 // "#leads/rejected" opens the Leads page filtered to that status (dashboard tiles link here).
 let _statusFilter = "all";
 function setPage(hash) {
@@ -767,3 +767,74 @@ $("#liRun").addEventListener("click", async () => {
   catch (e) { b.disabled = false; $("#liMsg").className = "msg err"; $("#liMsg").textContent = e.message; }
 });
 liLoad();
+
+
+// ── Services: credit check + API check, status bar ─────────────────────────
+const _SVC_STATE = { ok: "Working", low: "Running low", down: "Down", off: "Not set up" };
+function svcAmt(s, v) {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  return s.unit === "$" ? `$${n.toFixed(2)}` : `${Math.round(n).toLocaleString()} ${s.unit || ""}`.trim();
+}
+function svcShort(s) {
+  if (s.state === "off") return "off";
+  if (s.state === "down" && !s.api_ok) return "down";
+  if (s.remaining !== null && s.remaining !== undefined && s.unit) return svcAmt(s, s.remaining) + " left";
+  return s.state === "ok" ? "OK" : _SVC_STATE[s.state];
+}
+function svcAgo(t) { if (!t) return "never"; const m = Math.round((Date.now() / 1000 - t) / 60); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; }
+let _svc = null;
+async function loadServices() {
+  try { _svc = await readResponse(await fetch("/api/services")); } catch (e) { return; }
+  renderServices();
+}
+function renderServices() {
+  if (!_svc) return;
+  const list = Object.values(_svc.services || {});
+  const bad = list.filter((s) => s.state === "down" || s.state === "low");
+  const badge = $("#svcCount"); if (badge) { badge.textContent = bad.length; badge.classList.toggle("alert", bad.length > 0); }
+  setHTML($("#svcBar"), list.length ? list.filter((s) => s.state !== "off").map((s) =>
+    `<span class="svc-pill ${s.state}" title="${esc(s.name)}: ${esc(_SVC_STATE[s.state])}${s.detail ? " · " + esc(s.detail) : ""}"><i></i>${esc(s.name)} <b>${esc(svcShort(s))}</b></span>`).join("")
+    : `<span class="svc-pill"><i></i>Services: not checked yet</span>`);
+  if ($("#svcEvery")) $("#svcEvery").textContent = _svc.every_minutes || 15;
+  if ($("#svcChecked")) $("#svcChecked").textContent = `Last checked ${svcAgo(_svc.at)}`;
+  const ch = _svc.channels || {};
+  setHTML($("#svcChannels"), `Alerts go to: ${ch.google_chat ? '<span class="svc-ok">Google Chat ✓</span>' : '<span class="svc-no">Google Chat not set up</span>'} · ${ch.email ? `<span class="svc-ok">Email ✓ (${esc(ch.email_to)})</span>` : '<span class="svc-no">Email not set up</span>'}`
+    + (!ch.google_chat && !ch.email ? ' <span class="svc-no">— nobody is told yet. Add GCHAT_WEBHOOK_URL on Render.</span>' : ""));
+  setHTML($("#svcGrid"), list.map((s) => {
+    const hasCredit = s.unit && s.remaining !== null && s.remaining !== undefined;
+    const pct = hasCredit && s.limit ? Math.max(0, Math.min(100, (Number(s.remaining) / Number(s.limit)) * 100)) : null;
+    const plan = [s.plan, s.paid === true ? "paid" : s.paid === false ? "free" : ""].filter(Boolean).join(" · ");
+    return `<div class="panel svc-card ${s.state}">
+      <div class="svc-top"><div><div class="svc-name">${esc(s.name)}</div><div class="subtle">${esc(s.role || "")}</div></div><span class="svc-state ${s.state}">${esc(_SVC_STATE[s.state] || s.state)}</span></div>
+      <div class="svc-row"><span class="svc-k">API check</span><span>${s.state === "off" ? "—" : s.api_ok ? '<span class="svc-ok">Key works ✓</span>' : `<span class="svc-no">Failing</span>`}</span></div>
+      <div class="svc-row"><span class="svc-k">Credit check</span><span>${hasCredit ? `<b>${esc(svcAmt(s, s.remaining))}</b> left${s.limit !== null && s.limit !== undefined ? ` of ${esc(svcAmt(s, s.limit))}` : ""}${s.per ? ` <span class="subtle">${esc(s.per)}</span>` : ""}` : s.unit ? "—" : '<span class="subtle">No credits (subscription / free)</span>'}</span></div>
+      ${pct !== null ? `<div class="svc-meter"><span style="width:${pct}%"></span></div>` : ""}
+      ${plan ? `<div class="svc-row"><span class="svc-k">Plan</span><span>${esc(plan)}</span></div>` : ""}
+      ${s.cap !== null && s.cap !== undefined ? `<div class="svc-row"><span class="svc-k">Alert cap</span><span class="svc-cap">Alert at ${s.unit === "$" ? "$" : ""}<input type="number" min="0" step="${s.unit === "$" ? "0.5" : "10"}" value="${esc(s.cap)}" data-cap="${esc(s.key)}" />${s.unit === "$" ? "" : " " + esc(s.unit)} <button class="mini" data-cap-save="${esc(s.key)}">Save</button></span></div>` : ""}
+      ${s.detail ? `<div class="svc-detail">${esc(s.detail)}</div>` : ""}
+      <div class="svc-foot"><span class="subtle">Checked ${svcAgo(s.checked_at)}</span>${s.topup ? `<a href="${esc(s.topup)}" target="_blank" rel="noopener">${s.unit ? "Top up / billing ↗" : "Open ↗"}</a>` : ""}</div>
+    </div>`;
+  }).join(""));
+  const log = _svc.alerts || [];
+  setHTML($("#svcLog"), log.length ? log.map((a) => `<div class="svc-alert"><div class="subtle">${new Date(a.at * 1000).toLocaleString()} · ${esc(Object.entries(a.delivered || {}).map(([k, v]) => `${k.replace("_", " ")}: ${v}`).join(", "))}</div><pre>${esc(a.text)}</pre></div>`).join("") : '<p class="subtle" style="padding:14px">No alerts sent yet.</p>');
+}
+$("#svcCheckBtn").addEventListener("click", async () => {
+  const b = $("#svcCheckBtn"), m = $("#svcMsg"); b.disabled = true; m.className = "msg"; m.textContent = "Checking every service…";
+  try { _svc = await readResponse(await fetch("/api/services/check", { method: "POST" })); renderServices(); m.textContent = "Done."; }
+  catch (e) { m.className = "msg err"; m.textContent = e.message; } finally { b.disabled = false; }
+});
+$("#svcTestBtn").addEventListener("click", async () => {
+  const m = $("#svcMsg"); m.className = "msg"; m.textContent = "Sending…";
+  try { const r = await readResponse(await fetch("/api/services/test-alert", { method: "POST" })); m.textContent = "Test alert: " + Object.entries(r.delivered || {}).map(([k, v]) => `${k.replace("_", " ")} ${v}`).join(", "); }
+  catch (e) { m.className = "msg err"; m.textContent = e.message; }
+});
+$("#svcGrid").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-cap-save]"); if (!b) return;
+  const key = b.dataset.capSave, inp = document.querySelector(`[data-cap="${key}"]`), m = $("#svcMsg");
+  b.disabled = true; m.className = "msg"; m.textContent = "Saving the cap…";
+  try { _svc = await readResponse(await fetch("/api/services/cap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ service: key, value: Number(inp.value) }) })); renderServices(); m.textContent = "Cap saved."; }
+  catch (err) { m.className = "msg err"; m.textContent = err.message; } finally { b.disabled = false; }
+});
+loadServices();
+setInterval(loadServices, 60000);
