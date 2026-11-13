@@ -99,8 +99,9 @@ def _openrouter() -> dict:
         return {"api_ok": False, "detail": _err(r)}
     d = r.json().get("data") or {}
     total, used = float(d.get("total_credits") or 0), float(d.get("total_usage") or 0)
-    return {"api_ok": True, "plan": "Prepaid credits", "paid": True,
-            "limit": round(total, 2), "used": round(used, 2), "remaining": round(total - used, 2)}
+    # Pay-as-you-go: there is no plan limit, just a balance (bought minus used).
+    return {"api_ok": True, "plan": "Pay-as-you-go balance", "paid": True, "balance": True,
+            "bought": round(total, 2), "used": round(used, 2), "remaining": round(total - used, 2)}
 
 
 def _tavily() -> dict:
@@ -300,8 +301,9 @@ def _line(r: dict) -> str:
         left = f" ({_fmt_amount(r, r.get('remaining'))} left)" if r.get("remaining") is not None else ""
         return f"✅ {r['name']} is working again{left}."
     if r["state"] == "low":
-        return (f"🟡 {r['name']} is running low: {_fmt_amount(r, r.get('remaining'))} left "
-                f"of {_fmt_amount(r, r.get('limit'))} (alert cap {_fmt_amount(r, r.get('cap'))}). "
+        of = f" of {_fmt_amount(r, r.get('limit'))}" if r.get("limit") is not None else ""
+        return (f"🟡 {r['name']} is running low: {_fmt_amount(r, r.get('remaining'))} left{of} "
+                f"(alert cap {_fmt_amount(r, r.get('cap'))}). "
                 f"Top up before it runs out: {r.get('topup')}")
     why = r.get("detail") or "not working"
     return (f"🔴 {r['name']} is DOWN ({r['role'][0].lower() + r['role'][1:]}): {why}. Leads will pile up or go "

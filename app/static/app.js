@@ -801,19 +801,30 @@ function renderServices() {
   const ch = _svc.channels || {};
   setHTML($("#svcChannels"), `Alerts go to: ${ch.google_chat ? '<span class="svc-ok">Google Chat ✓</span>' : '<span class="svc-no">Google Chat not set up</span>'} · ${ch.email ? `<span class="svc-ok">Email ✓ (${esc(ch.email_to)})</span>` : '<span class="svc-no">Email not set up</span>'}`
     + (!ch.google_chat && !ch.email ? ' <span class="svc-no">— nobody is told yet. Add GCHAT_WEBHOOK_URL on Render.</span>' : ""));
-  setHTML($("#svcGrid"), list.map((s) => {
+  const order = { down: 0, low: 1, ok: 2, off: 3 };
+  const rows = [...list].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
+  setHTML($("#svcGrid"), `<div class="svc-head"><span>Service</span><span>Status</span><span>API check</span><span>Credits</span><span>Plan</span><span>Alert cap</span><span></span></div>` + rows.map((s) => {
     const hasCredit = s.unit && s.remaining !== null && s.remaining !== undefined;
     const pct = hasCredit && s.limit ? Math.max(0, Math.min(100, (Number(s.remaining) / Number(s.limit)) * 100)) : null;
     const plan = [s.plan, s.paid === true ? "paid" : s.paid === false ? "free" : ""].filter(Boolean).join(" · ");
+    let credit = '<span class="subtle">No credits</span>';
+    if (hasCredit) {
+      const sub = s.balance ? `$${Number(s.bought).toFixed(2)} bought · $${Number(s.used).toFixed(2)} used`
+        : `of ${svcAmt(s, s.limit)}${s.per ? " " + s.per : ""}`;
+      credit = `<b class="svc-amt">${esc(svcAmt(s, s.remaining))}</b> <span class="subtle">${s.balance ? "balance" : "left"}</span><div class="subtle svc-sub">${esc(sub)}</div>${pct !== null ? `<div class="svc-meter"><span style="width:${pct}%"></span></div>` : ""}`;
+    } else if (s.unit) credit = "—";
+    const cap = s.cap !== null && s.cap !== undefined
+      ? `<span class="svc-cap">${s.unit === "$" ? "$" : ""}<input type="number" min="0" step="${s.unit === "$" ? "0.5" : "10"}" value="${esc(s.cap)}" data-cap="${esc(s.key)}" aria-label="Alert cap for ${esc(s.name)}" />${s.unit === "$" ? "" : " " + esc(s.unit)} <button class="mini" data-cap-save="${esc(s.key)}">Save</button></span>`
+      : '<span class="subtle">—</span>';
     return `<div class="panel svc-card ${s.state}">
-      <div class="svc-top"><div><div class="svc-name">${esc(s.name)}</div><div class="subtle">${esc(s.role || "")}</div></div><span class="svc-state ${s.state}">${esc(_SVC_STATE[s.state] || s.state)}</span></div>
-      <div class="svc-row"><span class="svc-k">API check</span><span>${s.state === "off" ? "—" : s.api_ok ? '<span class="svc-ok">Key works ✓</span>' : `<span class="svc-no">Failing</span>`}</span></div>
-      <div class="svc-row"><span class="svc-k">Credit check</span><span>${hasCredit ? `<b>${esc(svcAmt(s, s.remaining))}</b> left${s.limit !== null && s.limit !== undefined ? ` of ${esc(svcAmt(s, s.limit))}` : ""}${s.per ? ` <span class="subtle">${esc(s.per)}</span>` : ""}` : s.unit ? "—" : '<span class="subtle">No credits (subscription / free)</span>'}</span></div>
-      ${pct !== null ? `<div class="svc-meter"><span style="width:${pct}%"></span></div>` : ""}
-      ${plan ? `<div class="svc-row"><span class="svc-k">Plan</span><span>${esc(plan)}</span></div>` : ""}
-      ${s.cap !== null && s.cap !== undefined ? `<div class="svc-row"><span class="svc-k">Alert cap</span><span class="svc-cap">Alert at ${s.unit === "$" ? "$" : ""}<input type="number" min="0" step="${s.unit === "$" ? "0.5" : "10"}" value="${esc(s.cap)}" data-cap="${esc(s.key)}" />${s.unit === "$" ? "" : " " + esc(s.unit)} <button class="mini" data-cap-save="${esc(s.key)}">Save</button></span></div>` : ""}
+      <div class="svc-c svc-who"><i class="svc-dot"></i><div><div class="svc-name">${esc(s.name)}</div><div class="subtle">${esc(s.role || "")}</div></div></div>
+      <div class="svc-c"><span class="svc-state ${s.state}">${esc(_SVC_STATE[s.state] || s.state)}</span></div>
+      <div class="svc-c"><span class="svc-lbl">API check</span>${s.state === "off" ? "—" : s.api_ok ? '<span class="svc-ok">Key works ✓</span>' : '<span class="svc-no">Failing ✕</span>'}</div>
+      <div class="svc-c"><span class="svc-lbl">Credits</span>${credit}</div>
+      <div class="svc-c"><span class="svc-lbl">Plan</span>${esc(plan) || "—"}</div>
+      <div class="svc-c"><span class="svc-lbl">Alert cap</span>${cap}</div>
+      <div class="svc-c svc-end">${s.topup ? `<a href="${esc(s.topup)}" target="_blank" rel="noopener">${s.unit ? "Top up ↗" : "Open ↗"}</a>` : ""}<span class="subtle">${esc(svcAgo(s.checked_at))}</span></div>
       ${s.detail ? `<div class="svc-detail">${esc(s.detail)}</div>` : ""}
-      <div class="svc-foot"><span class="subtle">Checked ${svcAgo(s.checked_at)}</span>${s.topup ? `<a href="${esc(s.topup)}" target="_blank" rel="noopener">${s.unit ? "Top up / billing ↗" : "Open ↗"}</a>` : ""}</div>
     </div>`;
   }).join(""));
   const log = _svc.alerts || [];
