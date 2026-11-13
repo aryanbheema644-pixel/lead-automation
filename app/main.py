@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import health, notify, config, db, dedupe, gtm, pipedrive, queue_review, review_agent, sheets, source_status, source_writeback
+from . import health, notify, server_status, config, db, dedupe, gtm, pipedrive, queue_review, review_agent, sheets, source_status, source_writeback
 from .pipeline import distribution, llm, orchestrator
 from .pipeline.linkedin import canonical_linkedin
 from .pipeline.urls import canonical_url
@@ -67,6 +67,7 @@ def _startup() -> None:
         db.meta_set("dedupe_scan_result", json.dumps(dedupe.scan_existing()))
         db.meta_set("dedupe_scanned", "1")
     _start_scheduler()
+    server_status.record_start()
     health.start()
 
 

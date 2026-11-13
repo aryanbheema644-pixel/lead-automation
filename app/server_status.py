@@ -1,0 +1,158 @@
+"""The Render server LeadSearch runs on: memory, uptime, restarts, deploys.
+
+Read from inside the server itself (no key needed):
+- memory used vs the instance's limit (the container's cgroup; Starter = 512 MB).
+  Render restarts the server when it goes over, which is what its "exceeded its
+  memory limit" email is about. Above RENDER_MEMORY_ALERT_PCT it shows amber;
+- uptime, and every start since (record_start). A start without a new commit
+  behind it is a restart Render did on its own, most often memory;
+- the commit that's live (RENDER_GIT_COMMIT, set by Render).
+
+With RENDER_API_KEY set (Render → Account settings → API keys), it also reads
+the latest deploy's status, so a failed deploy shows up here.
+
+A server that is completely down can't report on itself: Render's own emails
+(or an outside uptime monitor) cover that case.
+"""
+from __future__ import annotations
+
+import json
+import os
+import resource
+import sys
+import time
+
+import httpx
+
+from . import config, db
+
+_started = time.time()
+
+
+def _read(path: str) -> str | None:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def memory() -> dict:
+    """{used_mb, limit_mb, pct, source}: the container's memory if we can see
+    it (Linux cgroup), else this process's own."""
+    used = limit = None
+    src = "container"
+    cur = _read("/sys/fs/cgroup/memory.current")               # cgroup v2
+    if cur is not None:
+        used = int(cur)
+        mx = _read("/sys/fs/cgroup/memory.max")
+        limit = int(mx) if mx and mx != "max" else None
+    else:                                                      # cgroup v1
+        cur = _read("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        if cur is not None:
+            used = int(cur)
+            mx = _read("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+            limit = int(mx) if mx and int(mx) < 1 << 50 else None
+    if used is None:                                           # not in a container (laptop)
+        src = "process"
+        status = _read("/proc/self/status") or ""
+        rss = next((int(l.split()[1]) * 1024 for l in status.splitlines() if l.startswith("VmRSS:")), None)
+        if rss is None:                                        # macOS: peak RSS, bytes
+            r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            rss = r if sys.platform == "darwin" else r * 1024
+        used = rss
+    if limit is None:
+        limit = config.RENDER_MEMORY_MB * 1024 * 1024
+    mb = lambda b: round(b / 1048576)
+    return {"used_mb": mb(used), "limit_mb": mb(limit), "pct": round(100 * used / limit, 1), "source": src}
+
+
+def _commit() -> str:
+    return (os.environ.get("RENDER_GIT_COMMIT") or "")[:7]
+
+
+def record_start() -> None:
+    """Called once at startup: remember when and on which commit we started."""
+    try:
+        starts = json.loads(db.meta_get("server_starts", "[]") or "[]")
+    except ValueError:
+        starts = []
+    starts.insert(0, {"at": _started, "commit": _commit()})
+    db.meta_set("server_starts", json.dumps(starts[:100]))
+
+
+def _restarts(window_h: float = 24) -> tuple[int, int, float | None]:
+    """(starts in the window, of those not caused by a new deploy, last unexpected)."""
+    try:
+        starts = json.loads(db.meta_get("server_starts", "[]") or "[]")
+    except ValueError:
+        starts = []
+    since = time.time() - window_h * 3600
+    n = unexpected = 0
+    last = None
+    for i, s in enumerate(starts):
+        if s["at"] < since:
+            break
+        n += 1
+        prev = starts[i + 1] if i + 1 < len(starts) else None
+        if prev and s.get("commit") and s.get("commit") == prev.get("commit"):
+            unexpected += 1                     # same code as before: Render restarted it
+            last = last or s["at"]
+    return n, unexpected, last
+
+
+def _ago(sec: float) -> str:
+    sec = int(sec)
+    if sec < 3600:
+        return f"{sec // 60} min"
+    if sec < 86400:
+        return f"{sec // 3600} h {sec % 3600 // 60} min"
+    return f"{sec // 86400} d {sec % 86400 // 3600} h"
+
+
+def _deploy() -> dict | None:
+    sid = os.environ.get("RENDER_SERVICE_ID")
+    if not (config.RENDER_API_KEY and sid):
+        return None
+    try:
+        with httpx.Client(timeout=15) as c:
+            r = c.get(f"https://api.render.com/v1/services/{sid}/deploys", params={"limit": 1},
+                      headers={"Authorization": f"Bearer {config.RENDER_API_KEY}"})
+        if r.status_code != 200:
+            return {"error": f"Render API HTTP {r.status_code}"}
+        d = (r.json() or [{}])[0].get("deploy") or {}
+        return {"status": d.get("status"), "commit": ((d.get("commit") or {}).get("id") or "")[:7],
+                "finished": d.get("finishedAt") or d.get("updatedAt")}
+    except (httpx.HTTPError, ValueError, IndexError) as e:
+        return {"error": str(e)[:120]}
+
+
+def check() -> dict:
+    """The health row for the Render server (shape as health.check's)."""
+    m = memory()
+    n, unexpected, last = _restarts()
+    up = time.time() - _started
+    out = {"api_ok": True, "memory": m, "uptime": _ago(up), "commit": _commit(),
+           "restarts_24h": n, "unexpected_24h": unexpected,
+           "plan": f"Up {_ago(up)}" + (f" · commit {_commit()}" if _commit() else "")}
+    notes, warn = [], []
+    if m["pct"] >= config.RENDER_MEMORY_ALERT_PCT:
+        warn.append(f"Memory at {m['pct']:.0f}% ({m['used_mb']} of {m['limit_mb']} MB): Render restarts "
+                    "the server at 100%")
+    if unexpected and last and time.time() - last < 6 * 3600:
+        warn.append(f"Render restarted the server on its own {_ago(time.time() - last)} ago "
+                    "(no new deploy): most likely it ran out of memory")
+    elif unexpected:
+        notes.append(f"{unexpected} restart(s) without a deploy in the last 24 h")
+    dep = _deploy()
+    if dep and dep.get("status") in ("build_failed", "update_failed", "canceled", "pre_deploy_failed"):
+        warn.append(f"Latest deploy {dep.get('commit') or ''} {dep['status'].replace('_', ' ')}: "
+                    "the server is still on the previous version")
+    elif dep and dep.get("status"):
+        notes.append(f"Latest deploy: {dep['status'].replace('_', ' ')}")
+    out["deploy"] = dep
+    out["warn"] = warn
+    if warn:
+        out["detail"] = " · ".join(warn)
+    out["note"] = " · ".join(notes)
+    return out

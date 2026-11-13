@@ -23,10 +23,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from . import config, db, notify
+from . import config, db, notify, server_status
 
 # What we track, in the order the status bar shows them.
 SERVICES = {
+    "render": {"name": "Render server", "role": "Hosts LeadSearch (this app)", "unit": None,
+               "topup": "https://dashboard.render.com"},
     "openrouter": {"name": "OpenRouter", "role": "AI that reads and judges leads", "unit": "$",
                    "cap": 5.0, "topup": "https://openrouter.ai/settings/credits"},
     "tavily": {"name": "Tavily", "role": "Web search for lead profiles", "unit": "searches",
@@ -194,7 +196,7 @@ def _screening() -> dict:
     return {"api_ok": True, "plan": "Our own server"}
 
 
-_CHECKS = {"openrouter": _openrouter, "tavily": _tavily, "apify": _apify, "firecrawl": _firecrawl,
+_CHECKS = {"render": lambda: server_status.check(), "openrouter": _openrouter, "tavily": _tavily, "apify": _apify, "firecrawl": _firecrawl,
            "pipedrive": _pipedrive, "sheets": _sheets, "screening": _screening}
 
 
@@ -203,6 +205,8 @@ def _state(res: dict, cap: float | None) -> str:
         return "off"
     if not res.get("api_ok"):
         return "down"
+    if res.get("warn"):
+        return "low"                                  # e.g. the server's memory is high
     rem = res.get("remaining")
     if rem is not None and float(rem) <= 0:
         return "down"
@@ -300,6 +304,8 @@ def _line(r: dict) -> str:
     if r["state"] == "ok":
         left = f" ({_fmt_amount(r, r.get('remaining'))} left)" if r.get("remaining") is not None else ""
         return f"✅ {r['name']} is working again{left}."
+    if r["state"] == "low" and r.get("warn"):
+        return f"🟡 {r['name']}: {r.get('detail')}. Check: {r.get('topup')}"
     if r["state"] == "low":
         of = f" of {_fmt_amount(r, r.get('limit'))}" if r.get("limit") is not None else ""
         return (f"🟡 {r['name']} is running low: {_fmt_amount(r, r.get('remaining'))} left{of} "

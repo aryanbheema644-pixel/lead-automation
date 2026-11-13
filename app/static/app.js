@@ -778,6 +778,7 @@ function svcAmt(s, v) {
 }
 function svcShort(s) {
   if (s.state === "off") return "off";
+  if (s.memory) return `${Math.round(s.memory.pct)}% memory`;
   if (s.state === "down" && !s.api_ok) return "down";
   if (s.remaining !== null && s.remaining !== undefined && s.unit) return svcAmt(s, s.remaining) + " left";
   return s.state === "ok" ? "OK" : _SVC_STATE[s.state];
@@ -808,7 +809,10 @@ function renderServices() {
     const pct = hasCredit && s.limit ? Math.max(0, Math.min(100, (Number(s.remaining) / Number(s.limit)) * 100)) : null;
     const plan = [s.plan, s.paid === true ? "paid" : s.paid === false ? "free" : ""].filter(Boolean).join(" · ");
     let credit = '<span class="subtle">No credits</span>';
-    if (hasCredit) {
+    if (s.memory) {
+      const m = s.memory;
+      credit = `<b class="svc-amt">${m.used_mb} MB</b> <span class="subtle">of ${m.limit_mb} MB memory</span><div class="subtle svc-sub">${m.pct}% used${m.source === "process" ? " (this process)" : ""}</div><div class="svc-meter mem"><span style="width:${Math.min(100, m.pct)}%"></span></div>`;
+    } else if (hasCredit) {
       const sub = s.balance ? `$${Number(s.bought).toFixed(2)} bought · $${Number(s.used).toFixed(2)} used`
         : `of ${svcAmt(s, s.limit)}${s.per ? " " + s.per : ""}`;
       credit = `<b class="svc-amt">${esc(svcAmt(s, s.remaining))}</b> <span class="subtle">${s.balance ? "balance" : "left"}</span><div class="subtle svc-sub">${esc(sub)}</div>${pct !== null ? `<div class="svc-meter"><span style="width:${pct}%"></span></div>` : ""}`;
@@ -823,8 +827,9 @@ function renderServices() {
       <div class="svc-c"><span class="svc-lbl">Credits</span>${credit}</div>
       <div class="svc-c"><span class="svc-lbl">Plan</span>${esc(plan) || "—"}</div>
       <div class="svc-c"><span class="svc-lbl">Alert cap</span>${cap}</div>
-      <div class="svc-c svc-end">${s.topup ? `<a href="${esc(s.topup)}" target="_blank" rel="noopener">${s.unit ? "Top up ↗" : "Open ↗"}</a>` : ""}<span class="subtle">${esc(svcAgo(s.checked_at))}</span></div>
+      <div class="svc-c svc-end">${s.topup ? `<a href="${esc(s.topup)}" target="_blank" rel="noopener">${s.unit ? "Top up ↗" : s.memory ? "Dashboard ↗" : "Open ↗"}</a>` : ""}<span class="subtle">${esc(svcAgo(s.checked_at))}</span></div>
       ${s.detail ? `<div class="svc-detail">${esc(s.detail)}</div>` : ""}
+      ${s.note ? `<div class="svc-note">${esc(s.note)}</div>` : ""}
     </div>`;
   }).join(""));
   const log = _svc.alerts || [];

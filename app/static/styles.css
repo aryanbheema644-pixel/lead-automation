@@ -425,6 +425,8 @@ table.leads { width: 100%; border-collapse: collapse; }
 .svc-cap input { width: 64px; padding: 4px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font: inherit; }
 .svc-end { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; font-size: 12px; }
 .svc-end a { color: var(--text); font-weight: 600; }
+.svc-note { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.svc-card.ok .svc-meter.mem span { background: var(--good); }
 .svc-detail { grid-column: 1 / -1; font-size: 12px; color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); border-radius: 8px; padding: 6px 10px; word-break: break-word; }
 @media (max-width: 1100px) {
   .svc-head { display: none; }
