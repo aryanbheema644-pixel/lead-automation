@@ -43,7 +43,7 @@ SERVICES = {
                "topup": "https://console.cloud.google.com"},
     "screening": {"name": "Screening", "role": "Fit evaluator (ForRAG)", "unit": None, "topup": ""},
 }
-ALERT_REPEAT_HOURS = 6
+ALERT_REPEAT_HOURS = 2
 _lock = threading.Lock()
 
 
